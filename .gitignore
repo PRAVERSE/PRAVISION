@@ -23,3 +23,8 @@ creds.m
 # Scratch
 scratch/
 
+# Environment & Secrets
+.env
+.env.local
+.neon
+node_modules/

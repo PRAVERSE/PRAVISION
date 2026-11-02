@@ -1,9 +1,13 @@
 import os
 from pathlib import Path
+from dotenv import load_dotenv
 from pydantic import BaseModel, Field
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 WORKSPACE_DIR = BASE_DIR.parent
+# Load .env from project root
+load_dotenv(WORKSPACE_DIR / ".env")
+load_dotenv(WORKSPACE_DIR / ".env.local")
 TEMP_DATA_DIR = BASE_DIR / "temp_runtime"
 VAULT_DATA_DIR = BASE_DIR / "evidence_vault"
 
