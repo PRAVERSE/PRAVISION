@@ -10,11 +10,16 @@ __pycache__/
 frontend/node_modules/
 frontend/dist/
 frontend/.tmp/
+test-results/
+frontend/test-results/
 
 # PRAVISION Runtime Ephemeral
 backend/temp_runtime/
 temp_runtime/
 backend/evidence_vault/
+backend/backups/
+backend/.backup_key
+*.pravision_bkp
 *.m
 creds.m
 *.db

@@ -1,31 +1,33 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, Suspense, useCallback } from 'react';
 import { Header } from './components/Header';
 import { Sidebar } from './components/Sidebar';
-import { OverviewView } from './views/OverviewView';
 import { CommandCenterView } from './views/CommandCenterView';
-import { UniversalSearchView } from './views/UniversalSearchView';
-import { LiveInvestigationView } from './views/LiveInvestigationView';
-import { IntelligenceGraphView } from './views/IntelligenceGraphView';
-import { GothamGraphView } from './views/GothamGraphView';
-import { GlobalMapView } from './views/GlobalMapView';
-import { CasesView } from './views/CasesView';
-import { TimelineView } from './views/TimelineView';
-import { ThreatIntelView } from './views/ThreatIntelView';
-import { EntityDatabaseView } from './views/EntityDatabaseView';
-import { EvidenceCenterView } from './views/EvidenceCenterView';
-import { AiAssistantView } from './views/AiAssistantView';
-import { ImageIntelView } from './views/ImageIntelView';
-import { EmailIntelView } from './views/EmailIntelView';
-import { UsernameIntelView } from './views/UsernameIntelView';
-import { PhoneIntelView } from './views/PhoneIntelView';
-import { WebsiteIntelView } from './views/WebsiteIntelView';
-import { InfraIntelView } from './views/InfraIntelView';
-import { ToolCenterView } from './views/ToolCenterView';
-import { ReportsView } from './views/ReportsView';
-import { SettingsView } from './views/SettingsView';
+import { ViewLoadingFallback } from './components/ViewLoadingFallback';
+import { lazyWithRetry } from './utils/lazyWithRetry';
 
 import { osintApi } from './services/api';
 import { ActiveInvestigation, EvidenceFinding, IntelligenceGraph, ConnectorManifest } from './types/osint';
+
+// Lazy-loaded secondary analytical views (Code-split chunks)
+const CasesView = lazyWithRetry(() => import('./views/CasesView'), 'CasesView');
+const TimelineView = lazyWithRetry(() => import('./views/TimelineView'), 'TimelineView');
+const ThreatIntelView = lazyWithRetry(() => import('./views/ThreatIntelView'), 'ThreatIntelView');
+const EntityDatabaseView = lazyWithRetry(() => import('./views/EntityDatabaseView'), 'EntityDatabaseView');
+const EvidenceCenterView = lazyWithRetry(() => import('./views/EvidenceCenterView'), 'EvidenceCenterView');
+const AiAssistantView = lazyWithRetry(() => import('./views/AiAssistantView'), 'AiAssistantView');
+const UniversalSearchView = lazyWithRetry(() => import('./views/UniversalSearchView'), 'UniversalSearchView');
+const LiveInvestigationView = lazyWithRetry(() => import('./views/LiveInvestigationView'), 'LiveInvestigationView');
+const GothamGraphView = lazyWithRetry(() => import('./views/GothamGraphView'), 'GothamGraphView');
+const GlobalMapView = lazyWithRetry(() => import('./views/GlobalMapView'), 'GlobalMapView');
+const ImageIntelView = lazyWithRetry(() => import('./views/ImageIntelView'), 'ImageIntelView');
+const EmailIntelView = lazyWithRetry(() => import('./views/EmailIntelView'), 'EmailIntelView');
+const UsernameIntelView = lazyWithRetry(() => import('./views/UsernameIntelView'), 'UsernameIntelView');
+const PhoneIntelView = lazyWithRetry(() => import('./views/PhoneIntelView'), 'PhoneIntelView');
+const WebsiteIntelView = lazyWithRetry(() => import('./views/WebsiteIntelView'), 'WebsiteIntelView');
+const InfraIntelView = lazyWithRetry(() => import('./views/InfraIntelView'), 'InfraIntelView');
+const ToolCenterView = lazyWithRetry(() => import('./views/ToolCenterView'), 'ToolCenterView');
+const ReportsView = lazyWithRetry(() => import('./views/ReportsView'), 'ReportsView');
+const SettingsView = lazyWithRetry(() => import('./views/SettingsView'), 'SettingsView');
 
 export const App: React.FC = () => {
   const [currentView, setCurrentView] = useState<string>('overview');
@@ -34,8 +36,12 @@ export const App: React.FC = () => {
   const [graph, setGraph] = useState<IntelligenceGraph>({ nodes: [], edges: [] });
   const [connectors, setConnectors] = useState<ConnectorManifest[]>([]);
   const [settings, setSettings] = useState<any>(null);
+  const [wsStatus, setWsStatus] = useState<'connected' | 'connecting' | 'disconnected'>('disconnected');
 
   const socketRef = useRef<WebSocket | null>(null);
+  const reconnectAttemptsRef = useRef<number>(0);
+  const reconnectTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const processedEventIdsRef = useRef<Set<string>>(new Set());
 
   // Load connectors and settings on mount
   const refreshConnectors = async () => {
@@ -80,30 +86,46 @@ export const App: React.FC = () => {
     checkActiveInvestigation();
   }, []);
 
-  // WebSocket Live Updates
-  useEffect(() => {
-    if (!activeInvestigation || activeInvestigation.status !== 'running') {
-      if (socketRef.current) {
-        socketRef.current.close();
-        socketRef.current = null;
+  // Resilient WebSocket connection manager with exponential backoff & tab resume recovery
+  const connectWebSocket = useCallback((invId: string) => {
+    if (socketRef.current) {
+      try {
+        socketRef.current.close(1000, "Clean switch");
+      } catch (e) {
+        // ignore
       }
-      return;
+      socketRef.current = null;
     }
 
+    setWsStatus('connecting');
     const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     const host = window.location.host;
-    const wsUrl = `${proto}//${host}/api/investigations/${activeInvestigation.id}/live`;
+    const wsUrl = `${proto}//${host}/api/investigations/${invId}/live`;
 
     const ws = new WebSocket(wsUrl);
     socketRef.current = ws;
 
+    ws.onopen = () => {
+      setWsStatus('connected');
+      reconnectAttemptsRef.current = 0;
+    };
+
     ws.onmessage = async (event) => {
       try {
         const msg = JSON.parse(event.data);
+        const eventKey = `${msg.type}_${msg.connector || ''}_${msg.progress || ''}_${msg.findings_count || ''}`;
+        if (processedEventIdsRef.current.has(eventKey)) {
+          return; // Deduplicate repeat events
+        }
+        processedEventIdsRef.current.add(eventKey);
+        if (processedEventIdsRef.current.size > 200) {
+          processedEventIdsRef.current.clear();
+        }
+
         if (msg.type === 'findings_updated' || msg.type === 'connector_completed') {
           const [res, gr, invStatus] = await Promise.all([
-            osintApi.getInvestigationResults(activeInvestigation.id),
-            osintApi.getInvestigationGraph(activeInvestigation.id),
+            osintApi.getInvestigationResults(invId),
+            osintApi.getInvestigationGraph(invId),
             osintApi.getActiveInvestigation()
           ]);
           setFindings(res.findings);
@@ -122,10 +144,65 @@ export const App: React.FC = () => {
       }
     };
 
-    return () => {
-      ws.close();
+    ws.onerror = (err) => {
+      console.warn('WS communication error:', err);
     };
-  }, [activeInvestigation?.id, activeInvestigation?.status]);
+
+    ws.onclose = (event) => {
+      setWsStatus('disconnected');
+      socketRef.current = null;
+
+      // Only attempt reconnection if closure was abnormal and investigation is still running
+      if (event.code !== 1000 && activeInvestigation?.status === 'running') {
+        const maxAttempts = 5;
+        if (reconnectAttemptsRef.current < maxAttempts) {
+          const backoffDelay = Math.min(1000 * Math.pow(2, reconnectAttemptsRef.current), 16000);
+          reconnectAttemptsRef.current += 1;
+          reconnectTimeoutRef.current = setTimeout(() => {
+            connectWebSocket(invId);
+          }, backoffDelay);
+        }
+      }
+    };
+  }, [activeInvestigation?.status]);
+
+  useEffect(() => {
+    if (!activeInvestigation || activeInvestigation.status !== 'running') {
+      if (reconnectTimeoutRef.current) {
+        clearTimeout(reconnectTimeoutRef.current);
+      }
+      if (socketRef.current) {
+        socketRef.current.close(1000, "Normal termination");
+        socketRef.current = null;
+      }
+      setWsStatus('disconnected');
+      return;
+    }
+
+    connectWebSocket(activeInvestigation.id);
+
+    // Browser tab visibility change listener
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible' && (!socketRef.current || socketRef.current.readyState !== WebSocket.OPEN)) {
+        if (activeInvestigation?.status === 'running') {
+          connectWebSocket(activeInvestigation.id);
+        }
+      }
+    };
+
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+
+    return () => {
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+      if (reconnectTimeoutRef.current) {
+        clearTimeout(reconnectTimeoutRef.current);
+      }
+      if (socketRef.current) {
+        socketRef.current.close(1000, "Unmount");
+        socketRef.current = null;
+      }
+    };
+  }, [activeInvestigation?.id, activeInvestigation?.status, connectWebSocket]);
 
   const handleStartInvestigation = async (target: string, mode?: string, depth?: number) => {
     try {
@@ -187,124 +264,126 @@ export const App: React.FC = () => {
             />
           )}
 
-          {currentView === 'cases' && (
-            <CasesView
-              activeInvestigation={activeInvestigation}
-            />
-          )}
+          <Suspense fallback={<ViewLoadingFallback title={`LOADING ${currentView.toUpperCase().replace('_', ' ')}`} />}>
+            {currentView === 'cases' && (
+              <CasesView
+                activeInvestigation={activeInvestigation}
+              />
+            )}
 
-          {currentView === 'timeline' && (
-            <TimelineView />
-          )}
+            {currentView === 'timeline' && (
+              <TimelineView />
+            )}
 
-          {currentView === 'threat_intel' && (
-            <ThreatIntelView />
-          )}
+            {currentView === 'threat_intel' && (
+              <ThreatIntelView />
+            )}
 
-          {currentView === 'entity_db' && (
-            <EntityDatabaseView
-              findings={findings}
-            />
-          )}
+            {currentView === 'entity_db' && (
+              <EntityDatabaseView
+                findings={findings}
+              />
+            )}
 
-          {currentView === 'evidence_vault' && (
-            <EvidenceCenterView
-              findings={findings}
-              investigationId={activeInvestigation?.id}
-            />
-          )}
+            {currentView === 'evidence_vault' && (
+              <EvidenceCenterView
+                findings={findings}
+                investigationId={activeInvestigation?.id}
+              />
+            )}
 
-          {currentView === 'ai_assistant' && (
-            <AiAssistantView />
-          )}
+            {currentView === 'ai_assistant' && (
+              <AiAssistantView />
+            )}
 
-          {currentView === 'search' && (
-            <UniversalSearchView
-              onStartInvestigation={handleStartInvestigation}
-              onNavigate={setCurrentView}
-            />
-          )}
+            {currentView === 'search' && (
+              <UniversalSearchView
+                onStartInvestigation={handleStartInvestigation}
+                onNavigate={setCurrentView}
+              />
+            )}
 
-          {currentView === 'live' && (
-            <LiveInvestigationView
-              investigation={activeInvestigation}
-              findings={findings}
-              onCancel={handleCancelInvestigation}
-              onNavigate={setCurrentView}
-            />
-          )}
+            {currentView === 'live' && (
+              <LiveInvestigationView
+                investigation={activeInvestigation}
+                findings={findings}
+                onCancel={handleCancelInvestigation}
+                onNavigate={setCurrentView}
+              />
+            )}
 
-          {currentView === 'graph' && (
-            <GothamGraphView
-              graph={graph}
-              findings={findings}
-            />
-          )}
+            {currentView === 'graph' && (
+              <GothamGraphView
+                graph={graph}
+                findings={findings}
+              />
+            )}
 
-          {currentView === 'map' && (
-            <GlobalMapView findings={findings} />
-          )}
+            {currentView === 'map' && (
+              <GlobalMapView findings={findings} />
+            )}
 
-          {currentView === 'image_intel' && (
-            <ImageIntelView />
-          )}
+            {currentView === 'image_intel' && (
+              <ImageIntelView />
+            )}
 
-          {currentView === 'email_intel' && (
-            <EmailIntelView
-              onStartInvestigation={handleStartInvestigation}
-              findings={findings}
-            />
-          )}
+            {currentView === 'email_intel' && (
+              <EmailIntelView
+                onStartInvestigation={handleStartInvestigation}
+                findings={findings}
+              />
+            )}
 
-          {currentView === 'username_intel' && (
-            <UsernameIntelView
-              onStartInvestigation={handleStartInvestigation}
-              findings={findings}
-            />
-          )}
+            {currentView === 'username_intel' && (
+              <UsernameIntelView
+                onStartInvestigation={handleStartInvestigation}
+                findings={findings}
+              />
+            )}
 
-          {currentView === 'phone_intel' && (
-            <PhoneIntelView
-              onStartInvestigation={handleStartInvestigation}
-              findings={findings}
-            />
-          )}
+            {currentView === 'phone_intel' && (
+              <PhoneIntelView
+                onStartInvestigation={handleStartInvestigation}
+                findings={findings}
+              />
+            )}
 
-          {currentView === 'website_intel' && (
-            <WebsiteIntelView
-              onStartInvestigation={handleStartInvestigation}
-              findings={findings}
-            />
-          )}
+            {currentView === 'website_intel' && (
+              <WebsiteIntelView
+                onStartInvestigation={handleStartInvestigation}
+                findings={findings}
+              />
+            )}
 
-          {currentView === 'infra_intel' && (
-            <InfraIntelView
-              onStartInvestigation={handleStartInvestigation}
-              findings={findings}
-            />
-          )}
+            {currentView === 'infra_intel' && (
+              <InfraIntelView
+                onStartInvestigation={handleStartInvestigation}
+                findings={findings}
+              />
+            )}
 
-          {currentView === 'tool_center' && (
-            <ToolCenterView
-              connectors={connectors}
-              onRefresh={refreshConnectors}
-            />
-          )}
+            {currentView === 'tool_center' && (
+              <ToolCenterView
+                connectors={connectors}
+                onRefresh={refreshConnectors}
+              />
+            )}
 
-          {currentView === 'reports' && (
-            <ReportsView
-              investigation={activeInvestigation}
-              findings={findings}
-              graph={graph}
-            />
-          )}
+            {currentView === 'reports' && (
+              <ReportsView
+                investigation={activeInvestigation}
+                findings={findings}
+                graph={graph}
+              />
+            )}
 
-          {currentView === 'settings' && (
-            <SettingsView
-              settings={settings}
-              onRefreshSettings={refreshSettings}
-            />
-          )}
+            {currentView === 'settings' && (
+              <SettingsView
+                settings={settings}
+                onRefreshSettings={refreshSettings}
+              />
+            )}
+          </Suspense>
         </main>
       </div>
     </div>

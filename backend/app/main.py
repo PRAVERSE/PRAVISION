@@ -20,13 +20,16 @@ async def lifespan(app: FastAPI):
     logger.info("Initializing PRAVISION Intelligence Platform...")
     privacy_controller.purge_all_ephemeral_data()
     from app.storage.database import init_db
+    from app.storage.backup_system import backup_scheduler
     try:
         await init_db()
     except Exception as e:
         logger.error(f"Failed to initialize database: {e}")
     asyncio.create_task(connector_registry.run_all_health_checks())
+    asyncio.create_task(backup_scheduler.start())
     yield
     logger.info("Shutting down PRAVISION. Purging ephemeral investigation buffers...")
+    await backup_scheduler.stop()
     privacy_controller.purge_all_ephemeral_data()
 
 app = FastAPI(

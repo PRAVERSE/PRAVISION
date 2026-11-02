@@ -20,6 +20,7 @@ from app.media_forensics.forensic_analyzer import forensic_analyzer
 from app.storage.database import check_db_health
 from app.storage.case_manager import case_manager
 from app.storage.b2_storage import b2_storage
+from app.storage.backup_system import backup_system, backup_scheduler
 from app.intelligence.entity_resolution import entity_resolution
 from app.intelligence.graph_analytics import graph_analytics
 from app.intelligence.timeline_engine import timeline_engine
@@ -335,6 +336,56 @@ async def download_evidence_from_vault(file_key: str):
         )
     except FileNotFoundError:
         raise HTTPException(status_code=404, detail="Evidence file not found.")
+
+# ----------------- AUTOMATED CASE DOSSIER BACKUPS (STAGE 5.5) -----------------
+
+@router.get("/backup/status")
+async def get_backup_status():
+    return backup_scheduler.get_status()
+
+@router.get("/backup/history")
+async def get_backup_history():
+    return backup_system.list_backups()
+
+@router.post("/backup/run")
+async def trigger_manual_backup(payload: Dict[str, Any] = None):
+    case_id = payload.get("case_id") if payload else None
+    sync_cloud = payload.get("sync_cloud", True) if payload else True
+    try:
+        res = await backup_system.create_backup(case_id=case_id, sync_to_cloud=sync_cloud)
+        return res
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Backup creation failed: {str(e)}")
+
+@router.get("/backup/download/{backup_id}")
+async def download_backup_package(backup_id: str):
+    data = backup_system.get_backup_bytes(backup_id)
+    if not data:
+        raise HTTPException(status_code=404, detail="Backup archive not found.")
+    return Response(
+        content=data,
+        media_type="application/octet-stream",
+        headers={
+            "Content-Disposition": f"attachment; filename={backup_id}.pravision_bkp"
+        }
+    )
+
+@router.post("/backup/restore")
+async def restore_backup_package(
+    file: UploadFile = File(...),
+    verify_only: bool = Form(False),
+    prefix: str = Form("")
+):
+    backup_bytes = await file.read()
+    try:
+        res = await backup_system.restore_backup(
+            backup_bytes=backup_bytes,
+            target_case_prefix=prefix,
+            verify_only=verify_only
+        )
+        return res
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Restoration failed: {str(e)}")
 
 # ----------------- INTELLIGENCE WORKSTATION (STAGE 6) -----------------
 

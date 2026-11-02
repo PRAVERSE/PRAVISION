@@ -218,6 +218,37 @@ class CaseManager:
             logger.info(f"Successfully saved investigation {investigation_id} to case {case_id}")
             return {"status": "saved", "case_id": case_id, "investigation_id": investigation_id}
 
+    async def attach_evidence(
+        self,
+        case_id: str,
+        file_key: str,
+        file_hash: str,
+        file_size: int,
+        file_mime_type: str = "application/octet-stream",
+        connector_name: str = "evidence_vault",
+        investigation_id: Optional[str] = None,
+        entity_id: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """Directly attaches a verified evidence file to a case dossier."""
+        async with async_session_maker() as session:
+            ev_id = str(uuid.uuid4())
+            ev = EvidenceModel(
+                id=ev_id,
+                case_id=case_id,
+                investigation_id=investigation_id,
+                entity_id=entity_id,
+                connector_name=connector_name,
+                b2_file_key=file_key,
+                file_hash=file_hash,
+                file_size=file_size,
+                file_mime_type=file_mime_type,
+                storage_backend="neon_cloud" if b2_storage.is_neon else "local_vault",
+                raw_data={"attached_manually": True}
+            )
+            session.add(ev)
+            await session.commit()
+            return {"status": "attached", "evidence_id": ev_id, "case_id": case_id}
+
     async def delete_case(self, case_id: str, delete_evidence_files: bool = True) -> bool:
         s3_keys_to_delete = []
         async with async_session_maker() as session:
