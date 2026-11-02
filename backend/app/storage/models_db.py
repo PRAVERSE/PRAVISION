@@ -30,7 +30,7 @@ class CaseModel(Base):
     status = Column(String(32), default="active", index=True)  # active, closed, archived, suspended
     classification = Column(String(32), default="UNCLASSIFIED")  # UNCLASSIFIED, RESTRICTED, CONFIDENTIAL, SECRET
     tags = Column(JSON, default=list)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=datetime.utcnow, index=True)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
     # Relationships
@@ -50,7 +50,7 @@ class InvestigationModel(Base):
     status = Column(String(32), default="initialized", index=True)  # initialized, running, completed, cancelled, error
     total_findings = Column(Integer, default=0)
     verified_relationships = Column(Integer, default=0)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=datetime.utcnow, index=True)
     completed_at = Column(DateTime, nullable=True)
 
     # Relationships
@@ -61,6 +61,9 @@ class InvestigationModel(Base):
 
 class EntityModel(Base):
     __tablename__ = "entities"
+    __table_args__ = (
+        Index("ix_entities_case_type", "case_id", "entity_type"),
+    )
 
     id = Column(String(36), primary_key=True, default=gen_uuid)
     investigation_id = Column(String(36), ForeignKey("investigations.id", ondelete="CASCADE"), nullable=True, index=True)
@@ -80,6 +83,11 @@ class EntityModel(Base):
 
 class RelationshipModel(Base):
     __tablename__ = "relationships"
+    __mapper_args__ = {"confirm_deleted_rows": False}
+    __table_args__ = (
+        Index("ix_relationships_src_tgt", "source_id", "target_id"),
+        Index("ix_relationships_inv_type", "investigation_id", "relationship_type"),
+    )
 
     id = Column(String(36), primary_key=True, default=gen_uuid)
     investigation_id = Column(String(36), ForeignKey("investigations.id", ondelete="CASCADE"), nullable=False, index=True)
@@ -95,6 +103,9 @@ class RelationshipModel(Base):
 
 class EvidenceModel(Base):
     __tablename__ = "evidences"
+    __table_args__ = (
+        Index("ix_evidences_case_backend", "case_id", "storage_backend"),
+    )
 
     id = Column(String(36), primary_key=True, default=gen_uuid)
     investigation_id = Column(String(36), ForeignKey("investigations.id", ondelete="CASCADE"), nullable=True, index=True)
@@ -110,7 +121,7 @@ class EvidenceModel(Base):
     file_mime_type = Column(String(128), nullable=True)
     file_size = Column(Integer, default=0)
     storage_backend = Column(String(32), default="local")  # b2_cloud, local_vault, memory
-    collected_at = Column(DateTime, default=datetime.utcnow)
+    collected_at = Column(DateTime, default=datetime.utcnow, index=True)
 
     # Relationships
     case = relationship("CaseModel", back_populates="evidences")
@@ -123,7 +134,7 @@ class AuditLogModel(Base):
     user = Column(String(128), default="Analyst")
     action = Column(String(64), nullable=False, index=True)  # create_case, export_report, query_target, delete_case
     target_type = Column(String(64), nullable=True)
-    target_id = Column(String(128), nullable=True)
+    target_id = Column(String(128), nullable=True, index=True)
     ip_address = Column(String(64), default="127.0.0.1")
     details = Column(JSON, default=dict)
     timestamp = Column(DateTime, default=datetime.utcnow, index=True)

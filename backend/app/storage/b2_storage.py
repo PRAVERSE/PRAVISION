@@ -1,4 +1,6 @@
 import os
+import re
+import asyncio
 import hashlib
 import logging
 from pathlib import Path
@@ -10,6 +12,7 @@ from app.config import BASE_DIR, TEMP_DATA_DIR, VAULT_DATA_DIR
 logger = logging.getLogger("pravision.storage.b2")
 
 LOCAL_VAULT_DIR = VAULT_DATA_DIR
+MAX_FILE_SIZE_BYTES = 50 * 1024 * 1024  # 50 MB limit for single evidence artifact
 
 class B2StorageService:
     """
@@ -74,40 +77,49 @@ class B2StorageService:
         """
         Uploads an evidence file to Neon/B2 or local vault. Returns storage metadata and SHA-256 hash.
         """
-        sha256_hash = self.compute_sha256(data)
         size_bytes = len(data)
+        if size_bytes > MAX_FILE_SIZE_BYTES:
+            raise ValueError(f"File size {size_bytes} exceeds maximum allowed evidence size ({MAX_FILE_SIZE_BYTES} bytes)")
+
+        sha256_hash = self.compute_sha256(data)
         timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
-        safe_filename = filename.replace(" ", "_").replace("/", "_").replace("\\", "_")
+        raw_base = os.path.basename(filename)
+        safe_filename = re.sub(r"[^a-zA-Z0-9_.-]", "_", raw_base) or "evidence.bin"
         prefix = f"investigations/{investigation_id}/" if investigation_id else "global/"
         file_key = f"{prefix}{timestamp}_{sha256_hash[:12]}_{safe_filename}"
 
         if self.is_cloud_enabled:
-            try:
-                self._s3_client.put_object(
-                    Bucket=self.bucket_name,
-                    Key=file_key,
-                    Body=data,
-                    ContentType=content_type,
-                    Metadata={"sha256": sha256_hash, "original_filename": filename}
-                )
-                backend_type = "neon_cloud" if self.is_neon else "b2_cloud"
-                return {
-                    "storage_backend": backend_type,
-                    "file_key": file_key,
-                    "file_hash": sha256_hash,
-                    "file_size": size_bytes,
-                    "mime_type": content_type,
-                    "bucket": self.bucket_name,
-                    "endpoint": self.endpoint_url,
-                    "provider": "Neon Object Storage" if self.is_neon else "Backblaze B2"
-                }
-            except Exception as e:
-                logger.error(f"Error uploading to cloud storage: {e}. Falling back to local vault.")
+            max_retries = 3
+            for attempt in range(max_retries):
+                try:
+                    await asyncio.to_thread(
+                        self._s3_client.put_object,
+                        Bucket=self.bucket_name,
+                        Key=file_key,
+                        Body=data,
+                        ContentType=content_type,
+                        Metadata={"sha256": sha256_hash, "original_filename": safe_filename}
+                    )
+                    backend_type = "neon_cloud" if self.is_neon else "b2_cloud"
+                    return {
+                        "storage_backend": backend_type,
+                        "file_key": file_key,
+                        "file_hash": sha256_hash,
+                        "file_size": size_bytes,
+                        "mime_type": content_type,
+                        "bucket": self.bucket_name,
+                        "endpoint": self.endpoint_url,
+                        "provider": "Neon Object Storage" if self.is_neon else "Backblaze B2"
+                    }
+                except Exception as e:
+                    if attempt < max_retries - 1:
+                        await asyncio.sleep(0.5 * (2 ** attempt))
+                    else:
+                        logger.error(f"Error uploading to cloud storage after {max_retries} attempts: {e}. Falling back to local vault.")
 
         # Local Vault Fallback
         local_path = LOCAL_VAULT_DIR / file_key.replace("/", "_")
-        with open(local_path, "wb") as f:
-            f.write(data)
+        await asyncio.to_thread(local_path.write_bytes, data)
 
         return {
             "storage_backend": "local_vault",
@@ -124,20 +136,34 @@ class B2StorageService:
         Downloads evidence file and validates its SHA-256 checksum.
         """
         if self.is_cloud_enabled:
-            try:
+            def _sync_download():
                 resp = self._s3_client.get_object(Bucket=self.bucket_name, Key=file_key)
-                data = resp["Body"].read()
-                return data, self.compute_sha256(data)
-            except Exception as e:
-                logger.debug(f"Cloud download failed for {file_key}: {e}. Checking local vault.")
+                body = resp["Body"]
+                chunks = []
+                while True:
+                    chunk = body.read(64 * 1024)
+                    if not chunk:
+                        break
+                    chunks.append(chunk)
+                return b"".join(chunks)
+
+            max_retries = 3
+            for attempt in range(max_retries):
+                try:
+                    data = await asyncio.to_thread(_sync_download)
+                    return data, self.compute_sha256(data)
+                except Exception as e:
+                    if attempt < max_retries - 1:
+                        await asyncio.sleep(0.5 * (2 ** attempt))
+                    else:
+                        logger.debug(f"Cloud download failed for {file_key}: {e}. Checking local vault.")
 
         # Check local vault
         local_path = LOCAL_VAULT_DIR / file_key.replace("/", "_")
         if not local_path.exists():
             local_path = LOCAL_VAULT_DIR / file_key
         if local_path.exists():
-            with open(local_path, "rb") as f:
-                data = f.read()
+            data = await asyncio.to_thread(local_path.read_bytes)
             return data, self.compute_sha256(data)
 
         raise FileNotFoundError(f"Evidence file key '{file_key}' not found in cloud storage or local vault.")
@@ -149,7 +175,7 @@ class B2StorageService:
         deleted = False
         if self.is_cloud_enabled:
             try:
-                self._s3_client.delete_object(Bucket=self.bucket_name, Key=file_key)
+                await asyncio.to_thread(self._s3_client.delete_object, Bucket=self.bucket_name, Key=file_key)
                 deleted = True
             except Exception as e:
                 logger.error(f"Error deleting from cloud storage: {e}")
@@ -159,7 +185,7 @@ class B2StorageService:
             local_path = LOCAL_VAULT_DIR / file_key
         if local_path.exists():
             try:
-                local_path.unlink()
+                await asyncio.to_thread(local_path.unlink)
                 deleted = True
             except Exception as e:
                 logger.error(f"Error deleting local vault file: {e}")

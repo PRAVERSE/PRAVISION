@@ -1,3 +1,6 @@
+import asyncio
+import json
+import hashlib
 import logging
 import uuid
 from typing import List, Dict, Any, Optional
@@ -86,12 +89,14 @@ class CaseManager:
         root_type: str,
         mode: str,
         findings: List[EvidenceFinding],
-        graph_nodes: List[Dict[str, Any]],
-        graph_edges: List[Dict[str, Any]]
+        graph_nodes: Optional[List[Dict[str, Any]]] = None,
+        graph_edges: Optional[List[Dict[str, Any]]] = None
     ) -> Dict[str, Any]:
         """
         Persists an active memory investigation into a designated case dossier.
         """
+        graph_nodes = graph_nodes or []
+        graph_edges = graph_edges or []
         async with async_session_maker() as session:
             # Check case exists
             stmt = select(CaseModel).where(CaseModel.id == case_id)
@@ -115,12 +120,16 @@ class CaseManager:
 
             # Map and store unique entities
             entity_id_map: Dict[str, str] = {}
+            ent_models = []
             for node in graph_nodes:
-                ent_val = node.get("label") or node.get("id")
+                node_id = str(node.get("id")) if node.get("id") is not None else None
+                ent_val = str(node.get("label") or node.get("id") or "")
                 ent_type = node.get("type", "unknown")
                 ent_norm = ent_val.strip().lower()
+                ent_id = str(uuid.uuid4())
                 
                 ent_model = EntityModel(
+                    id=ent_id,
                     investigation_id=investigation_id,
                     case_id=case_id,
                     entity_type=ent_type,
@@ -129,21 +138,29 @@ class CaseManager:
                     confidence=node.get("confidence", "moderate"),
                     properties=node
                 )
-                session.add(ent_model)
-                entity_id_map[ent_val] = ent_model.id
+                ent_models.append(ent_model)
+                entity_id_map[ent_val] = ent_id
+                if node_id:
+                    entity_id_map[node_id] = ent_id
 
-            # Flush to get entity IDs
+            if ent_models:
+                session.add_all(ent_models)
+
+            # Flush to persist entities and verify integrity
             await session.flush()
 
             # Map and store relationships
+            rel_models = []
             for edge in graph_edges:
-                src_val = edge.get("source")
-                tgt_val = edge.get("target")
+                src_val = str(edge.get("source") or "")
+                tgt_val = str(edge.get("target") or "")
                 src_id = entity_id_map.get(src_val)
                 tgt_id = entity_id_map.get(tgt_val)
 
                 if src_id and tgt_id:
+                    rel_id = str(uuid.uuid4())
                     rel_model = RelationshipModel(
+                        id=rel_id,
                         investigation_id=investigation_id,
                         source_id=src_id,
                         target_id=tgt_id,
@@ -151,11 +168,22 @@ class CaseManager:
                         confidence=edge.get("confidence", "moderate"),
                         properties=edge
                     )
-                    session.add(rel_model)
+                    rel_models.append(rel_model)
+
+            if rel_models:
+                session.add_all(rel_models)
 
             # Store evidence items
+            ev_models = []
             for f in findings:
                 ent_id = entity_id_map.get(f.entity_value)
+                payload = f.raw_payload or {}
+                f_key = payload.get("file_key") or payload.get("b2_file_key")
+                f_hash = payload.get("file_hash") or payload.get("sha256")
+                f_size = payload.get("file_size") or payload.get("size", 0)
+                f_mime = payload.get("mime_type") or payload.get("content_type", "application/json")
+                backend_type = "neon_cloud" if b2_storage.is_neon else ("b2_cloud" if b2_storage.is_cloud_enabled else "database")
+                
                 ev_model = EvidenceModel(
                     id=f.id,
                     investigation_id=investigation_id,
@@ -163,12 +191,18 @@ class CaseManager:
                     entity_id=ent_id,
                     connector_name=f.source_name,
                     source_url=f.source_url,
-                    raw_data=f.raw_payload or {},
-                    file_mime_type="application/json",
-                    storage_backend="database",
+                    raw_data=payload,
+                    file_mime_type=f_mime,
+                    file_hash=f_hash,
+                    file_size=f_size,
+                    b2_file_key=f_key,
+                    storage_backend=backend_type if f_key else "database",
                     collected_at=f.collection_timestamp
                 )
-                session.add(ev_model)
+                ev_models.append(ev_model)
+
+            if ev_models:
+                session.add_all(ev_models)
 
             # Audit log
             audit = AuditLogModel(
@@ -184,24 +218,250 @@ class CaseManager:
             logger.info(f"Successfully saved investigation {investigation_id} to case {case_id}")
             return {"status": "saved", "case_id": case_id, "investigation_id": investigation_id}
 
-    async def delete_case(self, case_id: str) -> bool:
+    async def delete_case(self, case_id: str, delete_evidence_files: bool = True) -> bool:
+        s3_keys_to_delete = []
         async with async_session_maker() as session:
-            stmt = select(CaseModel).where(CaseModel.id == case_id)
+            stmt = select(CaseModel).options(selectinload(CaseModel.evidences)).where(CaseModel.id == case_id)
             res = await session.execute(stmt)
             case = res.scalar_one_or_none()
             if not case:
                 return False
+
+            # Collect associated evidence files to delete outside the DB transaction
+            if delete_evidence_files and case.evidences:
+                s3_keys_to_delete = [ev.b2_file_key for ev in case.evidences if ev.b2_file_key]
             
             await session.delete(case)
             audit = AuditLogModel(
                 action="delete_case",
                 target_type="case",
                 target_id=case_id,
-                details={"case_number": case.case_number}
+                details={"case_number": case.case_number, "evidence_deleted": delete_evidence_files}
             )
             session.add(audit)
             await session.commit()
-            return True
+
+        # Delete associated evidence files concurrently outside DB transaction
+        if s3_keys_to_delete:
+            delete_tasks = [b2_storage.delete_evidence(k) for k in s3_keys_to_delete]
+            await asyncio.gather(*delete_tasks, return_exceptions=True)
+            logger.info(f"Concurrently deleted {len(s3_keys_to_delete)} storage file(s) for case {case_id}")
+
+        return True
+
+    async def export_case_dossier(self, case_id: str) -> Dict[str, Any]:
+        """
+        Exports an entire case dossier, child investigations, entities, relationships,
+        and evidence metadata as a cryptographically verifiable JSON package for backup.
+        """
+        async with async_session_maker() as session:
+            stmt = select(CaseModel).options(
+                selectinload(CaseModel.investigations).selectinload(InvestigationModel.relationships),
+                selectinload(CaseModel.entities),
+                selectinload(CaseModel.evidences)
+            ).where(CaseModel.id == case_id)
+            res = await session.execute(stmt)
+            case = res.scalar_one_or_none()
+            if not case:
+                raise ValueError(f"Case with ID '{case_id}' does not exist.")
+
+            # Load audit logs
+            stmt_audit = select(AuditLogModel).where(AuditLogModel.target_id == case_id)
+            audits = (await session.execute(stmt_audit)).scalars().all()
+
+            invs_data = []
+            rels_data = []
+            for inv in case.investigations:
+                inv_dict = self._investigation_to_dict(inv)
+                invs_data.append(inv_dict)
+                for rel in (inv.relationships or []):
+                    rels_data.append({
+                        "id": rel.id,
+                        "investigation_id": rel.investigation_id,
+                        "source_id": rel.source_id,
+                        "target_id": rel.target_id,
+                        "relationship_type": rel.relationship_type,
+                        "confidence": rel.confidence,
+                        "properties": rel.properties or {}
+                    })
+
+            ents_data = [
+                {
+                    "id": e.id,
+                    "investigation_id": e.investigation_id,
+                    "entity_type": e.entity_type,
+                    "entity_value": e.entity_value,
+                    "normalized_value": e.normalized_value,
+                    "confidence": e.confidence,
+                    "properties": e.properties or {}
+                }
+                for e in case.entities
+            ]
+
+            evs_data = [
+                {
+                    "id": ev.id,
+                    "investigation_id": ev.investigation_id,
+                    "entity_id": ev.entity_id,
+                    "connector_name": ev.connector_name,
+                    "source_url": ev.source_url,
+                    "raw_data": ev.raw_data or {},
+                    "b2_file_key": ev.b2_file_key,
+                    "file_hash": ev.file_hash,
+                    "file_mime_type": ev.file_mime_type,
+                    "file_size": ev.file_size,
+                    "storage_backend": ev.storage_backend,
+                    "collected_at": ev.collected_at.isoformat() if ev.collected_at else None
+                }
+                for ev in case.evidences
+            ]
+
+            audits_data = [
+                {
+                    "action": a.action,
+                    "user": a.user,
+                    "target_type": a.target_type,
+                    "target_id": a.target_id,
+                    "details": a.details or {},
+                    "timestamp": a.timestamp.isoformat() if a.timestamp else None
+                }
+                for a in audits
+            ]
+
+            package = {
+                "format_version": "1.0",
+                "exported_at": datetime.utcnow().isoformat(),
+                "case": self._case_to_dict(case),
+                "investigations": invs_data,
+                "entities": ents_data,
+                "relationships": rels_data,
+                "evidences": evs_data,
+                "audit_logs": audits_data
+            }
+
+            raw_str = json.dumps(package, sort_keys=True)
+            package["checksum_sha256"] = hashlib.sha256(raw_str.encode("utf-8")).hexdigest()
+            return package
+
+    async def import_case_dossier(self, dossier_data: Dict[str, Any], generate_new_ids: bool = False) -> Dict[str, Any]:
+        """
+        Imports and restores a previously exported case dossier package into the database.
+        """
+        case_data = dossier_data.get("case", {})
+        if not case_data.get("case_number"):
+            raise ValueError("Invalid dossier package: missing case metadata.")
+
+        async with async_session_maker() as session:
+            case_id = str(uuid.uuid4()) if generate_new_ids else case_data["id"]
+            case_num = f"RESTORED-{case_data['case_number']}" if generate_new_ids else case_data["case_number"]
+
+            # Create case model
+            case = CaseModel(
+                id=case_id,
+                case_number=case_num,
+                title=case_data.get("title", "Restored Case"),
+                description=case_data.get("description"),
+                created_by=case_data.get("created_by", "Restoration Agent"),
+                status=case_data.get("status", "active"),
+                classification=case_data.get("classification", "UNCLASSIFIED"),
+                tags=case_data.get("tags", [])
+            )
+            session.add(case)
+
+            # Map IDs if generating new IDs
+            id_map: Dict[str, str] = {}
+            if generate_new_ids:
+                id_map[case_data["id"]] = case_id
+
+            # Restore investigations
+            inv_models = []
+            for inv in dossier_data.get("investigations", []):
+                old_id = inv["id"]
+                new_id = str(uuid.uuid4()) if generate_new_ids else old_id
+                id_map[old_id] = new_id
+                inv_models.append(InvestigationModel(
+                    id=new_id,
+                    case_id=case_id,
+                    root_input=inv["root_input"],
+                    root_type=inv["root_type"],
+                    mode=inv["mode"],
+                    status=inv.get("status", "completed"),
+                    total_findings=inv.get("total_findings", 0),
+                    verified_relationships=inv.get("verified_relationships", 0)
+                ))
+            if inv_models:
+                session.add_all(inv_models)
+
+            # Restore entities
+            ent_models = []
+            for ent in dossier_data.get("entities", []):
+                old_ent_id = ent["id"]
+                new_ent_id = str(uuid.uuid4()) if generate_new_ids else old_ent_id
+                id_map[old_ent_id] = new_ent_id
+                target_inv_id = id_map.get(ent.get("investigation_id"), ent.get("investigation_id"))
+                ent_models.append(EntityModel(
+                    id=new_ent_id,
+                    case_id=case_id,
+                    investigation_id=target_inv_id,
+                    entity_type=ent["entity_type"],
+                    entity_value=ent["entity_value"],
+                    normalized_value=ent.get("normalized_value", ent["entity_value"].strip().lower()),
+                    confidence=ent.get("confidence", "moderate"),
+                    properties=ent.get("properties", {})
+                ))
+            if ent_models:
+                session.add_all(ent_models)
+
+            # Restore relationships
+            rel_models = []
+            for rel in dossier_data.get("relationships", []):
+                target_inv_id = id_map.get(rel.get("investigation_id"), rel.get("investigation_id"))
+                new_src = id_map.get(rel["source_id"], rel["source_id"])
+                new_tgt = id_map.get(rel["target_id"], rel["target_id"])
+                rel_models.append(RelationshipModel(
+                    id=str(uuid.uuid4()) if generate_new_ids else rel["id"],
+                    investigation_id=target_inv_id,
+                    source_id=new_src,
+                    target_id=new_tgt,
+                    relationship_type=rel["relationship_type"],
+                    confidence=rel.get("confidence", "moderate"),
+                    properties=rel.get("properties", {})
+                ))
+            if rel_models:
+                session.add_all(rel_models)
+
+            # Restore evidences
+            ev_models = []
+            for ev in dossier_data.get("evidences", []):
+                target_inv_id = id_map.get(ev.get("investigation_id"), ev.get("investigation_id"))
+                target_ent_id = id_map.get(ev.get("entity_id"), ev.get("entity_id"))
+                ev_models.append(EvidenceModel(
+                    id=str(uuid.uuid4()) if generate_new_ids else ev["id"],
+                    case_id=case_id,
+                    investigation_id=target_inv_id,
+                    entity_id=target_ent_id,
+                    connector_name=ev["connector_name"],
+                    source_url=ev.get("source_url"),
+                    raw_data=ev.get("raw_data", {}),
+                    b2_file_key=ev.get("b2_file_key"),
+                    file_hash=ev.get("file_hash"),
+                    file_mime_type=ev.get("file_mime_type"),
+                    file_size=ev.get("file_size", 0),
+                    storage_backend=ev.get("storage_backend", "neon_cloud")
+                ))
+            if ev_models:
+                session.add_all(ev_models)
+
+            # Audit log
+            audit = AuditLogModel(
+                action="import_case_dossier",
+                target_type="case",
+                target_id=case_id,
+                details={"source_case_number": case_data.get("case_number"), "restored_at": datetime.utcnow().isoformat()}
+            )
+            session.add(audit)
+            await session.commit()
+            return {"status": "imported", "case_id": case_id, "case_number": case_num}
 
     def _case_to_dict(self, c: CaseModel) -> Dict[str, Any]:
         return {

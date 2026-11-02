@@ -43,9 +43,15 @@ else:
 engine_kwargs = {}
 if IS_POSTGRES:
     engine_kwargs.update({
-        "pool_size": 10,
-        "max_overflow": 20,
+        "pool_size": 15,
+        "max_overflow": 25,
+        "pool_timeout": 30,
+        "pool_recycle": 300,
         "pool_pre_ping": True,
+        "connect_args": {
+            "command_timeout": 30,
+            "server_settings": {"application_name": "pravision_backend"}
+        }
     })
 else:
     engine_kwargs.update({
