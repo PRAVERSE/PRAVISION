@@ -5,12 +5,11 @@ from pathlib import Path
 from typing import Optional, Dict, Any, Tuple
 from datetime import datetime
 
-from app.config import BASE_DIR, TEMP_DATA_DIR
+from app.config import BASE_DIR, TEMP_DATA_DIR, VAULT_DATA_DIR
 
 logger = logging.getLogger("pravision.storage.b2")
 
-LOCAL_VAULT_DIR = TEMP_DATA_DIR / "evidence_vault"
-LOCAL_VAULT_DIR.mkdir(parents=True, exist_ok=True)
+LOCAL_VAULT_DIR = VAULT_DATA_DIR
 
 class B2StorageService:
     """
@@ -163,3 +162,4 @@ class B2StorageService:
         }
 
 b2_storage = B2StorageService()
+

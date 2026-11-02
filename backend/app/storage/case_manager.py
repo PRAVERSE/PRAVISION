@@ -27,8 +27,10 @@ class CaseManager:
         tags: Optional[List[str]] = None
     ) -> Dict[str, Any]:
         case_num = f"CASE-{datetime.utcnow().strftime('%Y%m')}-{uuid.uuid4().hex[:6].upper()}"
+        case_id = str(uuid.uuid4())
         async with async_session_maker() as session:
             case = CaseModel(
+                id=case_id,
                 case_number=case_num,
                 title=title,
                 description=description,
@@ -43,7 +45,7 @@ class CaseManager:
                 user=created_by,
                 action="create_case",
                 target_type="case",
-                target_id=case.id,
+                target_id=case_id,
                 details={"case_number": case_num, "title": title}
             )
             session.add(audit)
@@ -230,3 +232,4 @@ class CaseManager:
         }
 
 case_manager = CaseManager()
+

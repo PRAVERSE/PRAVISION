@@ -202,3 +202,4 @@ export const EntityDatabaseView: React.FC<EntityDatabaseViewProps> = ({ findings
     </div>
   );
 };
+

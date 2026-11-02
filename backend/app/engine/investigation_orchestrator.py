@@ -96,8 +96,8 @@ class InvestigationOrchestrator:
                 pass
 
     def start_investigation(self, target_input: str, target_type: EntityType, mode: str, max_depth: int = 2) -> ActiveInvestigation:
-        # Clear existing investigation strictly from memory
-        self.clear_investigation()
+        # Clear existing investigation strictly from memory (preserve target file if media/document)
+        self.clear_investigation(preserve_target=target_input if target_type in (EntityType.IMAGE, EntityType.DOCUMENT) else None)
 
         inv = ActiveInvestigation(
             root_input=target_input,
@@ -239,7 +239,7 @@ class InvestigationOrchestrator:
         if self._active_investigation:
             self._active_investigation.status = "cancelled"
 
-    def clear_investigation(self):
+    def clear_investigation(self, preserve_target: Optional[str] = None):
         """Zero persistent history enforcement: Wipes all memory, graph, queue, and scratch files."""
         self.cancel_investigation()
         self._active_investigation = None
@@ -249,7 +249,7 @@ class InvestigationOrchestrator:
         self._discovery_queue.clear()
         self._depth_controller.reset()
         # Securely erase temporary media/documents
-        privacy_controller.purge_all_ephemeral_data()
+        privacy_controller.purge_all_ephemeral_data(preserve_file=preserve_target)
 
 orchestrator = InvestigationOrchestrator()
 

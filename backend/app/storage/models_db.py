@@ -127,3 +127,4 @@ class AuditLogModel(Base):
     ip_address = Column(String(64), default="127.0.0.1")
     details = Column(JSON, default=dict)
     timestamp = Column(DateTime, default=datetime.utcnow, index=True)
+

@@ -1151,3 +1151,4 @@ class OpenOSINTConnector(BaseConnector):
             except Exception as e:
                 logger.debug(f"URLhaus lookup error: {e}")
         return findings
+

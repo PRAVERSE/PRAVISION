@@ -49,14 +49,18 @@ class PrivacyController:
             logger.warning(f"Failed to cleanup temp file: {e}")
         return False
 
-    def purge_all_ephemeral_data(self) -> int:
-        """Purges all files in the runtime temp directory."""
+    def purge_all_ephemeral_data(self, preserve_file: Optional[Path | str] = None) -> int:
+        """Purges all files in the runtime temp directory except optionally preserved target."""
         deleted_count = 0
         if not self.temp_dir.exists():
             return 0
-            
+
+        preserve_path = Path(preserve_file).resolve() if preserve_file else None
+
         for item in self.temp_dir.glob("*"):
             try:
+                if preserve_path and item.resolve() == preserve_path:
+                    continue
                 if item.is_file():
                     item.unlink(missing_ok=True)
                     deleted_count += 1

@@ -5,6 +5,7 @@ from pydantic import BaseModel, Field
 BASE_DIR = Path(__file__).resolve().parent.parent
 WORKSPACE_DIR = BASE_DIR.parent
 TEMP_DATA_DIR = BASE_DIR / "temp_runtime"
+VAULT_DATA_DIR = BASE_DIR / "evidence_vault"
 
 class InvestigationLimits(BaseModel):
     max_depth: int = Field(default=2, ge=1, le=5)
@@ -44,6 +45,7 @@ class PravisionSettings(BaseModel):
 
 settings = PravisionSettings()
 
-# Ensure ephemeral temp directory exists and is clean
+# Ensure directories exist
 TEMP_DATA_DIR.mkdir(parents=True, exist_ok=True)
+VAULT_DATA_DIR.mkdir(parents=True, exist_ok=True)
 

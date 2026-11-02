@@ -4,6 +4,7 @@ from typing import Dict, Any, Tuple, Optional
 from PIL import Image
 import exifread
 import imagehash
+from app.config import settings
 
 class MediaMetadataExtractor:
     """Extracts camera, timestamp, GPS, and technical properties from media files."""
@@ -28,15 +29,21 @@ class MediaMetadataExtractor:
             "raw_tags": {}
         }
 
-        if not os.path.exists(file_path):
+        actual_path = file_path
+        if not os.path.exists(actual_path):
+            candidate = settings.ephemeral_data_dir / file_path
+            if candidate.exists():
+                actual_path = str(candidate)
+
+        if not os.path.exists(actual_path):
             return result
 
         try:
-            with Image.open(file_path) as img:
+            with Image.open(actual_path) as img:
                 result["dimensions"] = f"{img.width}x{img.height}"
                 result["format"] = img.format
 
-            with open(file_path, "rb") as f:
+            with open(actual_path, "rb") as f:
                 tags = exifread.process_file(f, details=False)
 
             if tags:

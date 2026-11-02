@@ -235,3 +235,4 @@ export const EvidenceCenterView: React.FC<EvidenceCenterViewProps> = ({ findings
     </div>
   );
 };
+

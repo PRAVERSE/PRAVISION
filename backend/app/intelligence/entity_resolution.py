@@ -135,14 +135,52 @@ class EntityResolutionEngine:
                 if loc1 and loc2 and loc1.lower() != loc2.lower():
                     contradictions.append(f"Geographic conflict: '{loc1}' vs '{loc2}'")
 
+                dob1 = props1.get("dob") or props1.get("birth_year")
+                dob2 = props2.get("dob") or props2.get("birth_year")
+                if dob1 and dob2 and str(dob1) != str(dob2):
+                    contradictions.append(f"Birthdate conflict: '{dob1}' vs '{dob2}'")
+
+            # Check for corroborating identifiers (email, phone, national ID, handle)
+            has_corroboration = False
+            corroborating_detail = None
+            if props1 and props2:
+                for key in ["email", "phone", "identifier", "username", "account_id"]:
+                    v1 = props1.get(key)
+                    v2 = props2.get(key)
+                    if v1 and v2 and str(v1).strip().lower() == str(v2).strip().lower():
+                        has_corroboration = True
+                        corroborating_detail = f"Shared {key}: {v1}"
+                        break
+
             if sim >= 0.85:
-                return {
-                    "match_type": MatchType.POSSIBLE_MATCH if not contradictions else MatchType.CONTRADICTORY,
-                    "score": round(sim, 3),
-                    "is_match": True if not contradictions else False,
-                    "reason": f"High lexical similarity ({int(sim*100)}%) between '{val1}' and '{val2}'",
-                    "contradictions": contradictions
-                }
+                # STRICT INTELLIGENCE ENGINE RULE:
+                # For PERSON_NAME or individual identities, similar names alone MUST NOT be merged
+                # without corroborating evidence (such as shared email, phone, or exact match).
+                if type1 == EntityType.PERSON_NAME:
+                    if has_corroboration and not contradictions:
+                        return {
+                            "match_type": MatchType.HEURISTIC_MATCH,
+                            "score": round(sim, 3),
+                            "is_match": True,
+                            "reason": f"Similar person name ({int(sim*100)}%) corroborated by {corroborating_detail}",
+                            "contradictions": contradictions
+                        }
+                    else:
+                        return {
+                            "match_type": MatchType.POSSIBLE_MATCH if not contradictions else MatchType.CONTRADICTORY,
+                            "score": round(sim, 3),
+                            "is_match": False,  # Strict safeguard: Do not merge without corroboration
+                            "reason": f"Similar person name ({int(sim*100)}%) candidate flagged; not merged without corroborating evidence",
+                            "contradictions": contradictions
+                        }
+                else:
+                    return {
+                        "match_type": MatchType.POSSIBLE_MATCH if not contradictions else MatchType.CONTRADICTORY,
+                        "score": round(sim, 3),
+                        "is_match": True if not contradictions else False,
+                        "reason": f"High lexical similarity ({int(sim*100)}%) between '{val1}' and '{val2}'",
+                        "contradictions": contradictions
+                    }
 
         return {
             "match_type": MatchType.POSSIBLE_MATCH,
@@ -202,3 +240,4 @@ class EntityResolutionEngine:
         }
 
 entity_resolution = EntityResolutionEngine()
+

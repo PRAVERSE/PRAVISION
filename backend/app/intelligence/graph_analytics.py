@@ -123,3 +123,4 @@ class GraphAnalyticsEngine:
         return buf.getvalue().decode("utf-8")
 
 graph_analytics = GraphAnalyticsEngine()
+

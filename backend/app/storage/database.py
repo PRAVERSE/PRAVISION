@@ -88,3 +88,4 @@ async def check_db_health() -> Dict[str, Any]:
             "error": str(e),
             "is_postgres": IS_POSTGRES
         }
+

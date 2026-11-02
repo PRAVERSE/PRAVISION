@@ -249,3 +249,4 @@ export const AiAssistantView: React.FC = () => {
     </div>
   );
 };
+

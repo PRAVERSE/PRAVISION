@@ -124,3 +124,4 @@ class IntelligenceAssistant:
         }
 
 intelligence_assistant = IntelligenceAssistant()
+

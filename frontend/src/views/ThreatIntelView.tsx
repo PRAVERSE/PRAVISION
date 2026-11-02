@@ -173,3 +173,4 @@ export const ThreatIntelView: React.FC = () => {
     </div>
   );
 };
+

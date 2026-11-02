@@ -378,3 +378,4 @@ export const GothamGraphView: React.FC<GothamGraphViewProps> = ({ graph, finding
     </div>
   );
 };
+

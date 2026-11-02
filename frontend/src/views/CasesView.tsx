@@ -420,3 +420,4 @@ export const CasesView: React.FC<CasesViewProps> = ({ activeInvestigation }) => 
     </div>
   );
 };
+
