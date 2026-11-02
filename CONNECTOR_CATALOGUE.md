@@ -1,4 +1,4 @@
-# PRAVISION — Complete 64-Tool Integration Catalogue
+# PRAVISION — Complete 89-Tool Integration Catalogue (Phase 2 Expanded)
 
 Every tool in PRAVISION is managed through a typed abstract connector (`BaseConnector`) exposing machine-readable manifests, capability declarations, non-destructive health checks, rate limiting, and failure containment.
 
@@ -103,3 +103,33 @@ Every tool in PRAVISION is managed through a typed abstract connector (`BaseConn
 64. **Seeker**: Deceptive HTML5 geolocation lures. *(Status: Policy Restricted — Disabled)*
 65. **R-Fone**: Deceptive phone tracking. *(Status: Policy Restricted — Disabled)*
 66. **Bash Hot.sh**: Credential harvesting and phishing. *(Status: Policy Restricted — Disabled)*
+
+---
+
+## 5.10 Phase 2 Candidate & Workstation Extensions (24 Additional Tools)
+67. **WhatsMyName**: High-coverage username presence checks across 400+ online platforms. *(Status: Operational)*
+68. **Blackbird OSINT**: High-speed tech community and developer profile identifier (PyPI, npm, Kaggle, Pastebin). *(Status: Operational)*
+69. **Holehe**: Email registration checker via password-recovery mechanisms. *(Status: Operational)*
+70. **URLScan.io**: Global website scans, TLS infrastructure, and screenshot repository. *(Status: Operational)*
+71. **crt.sh Certificate Transparency**: Native public CT log search for real subdomains and certificates. *(Status: Operational)*
+72. **SecurityTrails**: Historical DNS and WHOIS intelligence database. *(Status: Config Required)*
+73. **GreyNoise Intelligence**: Internet scanner analysis, benign vs. malicious classification, and bot attribution. *(Status: Operational)*
+74. **AbuseIPDB**: IP reputation check and abuse complaint confidence scoring. *(Status: Config Required)*
+75. **MISP Threat Sharing**: Threat intelligence event correlation and IOC query. *(Status: Config Required)*
+76. **Yeti Threat Intelligence**: Cyber threat observables and campaign intelligence tracking. *(Status: Config Required)*
+77. **OpenCTI**: STIX 2.1 threat intelligence platform integration. *(Status: Config Required)*
+78. **OpenSanctions**: International sanctions, PEP, and financial watchlist screening. *(Status: Operational)*
+79. **Graphistry Cloud**: Large-scale GPU-accelerated link graph clustering. *(Status: Config Required)*
+80. **NetworkX Graph Engine**: Algorithmic topological centrality, shortest path, and community detection. *(Status: Operational)*
+81. **Gephi GEXF Exporter**: Standard graph exchange format serializer for visual network analysis. *(Status: Operational)*
+82. **Apache Tika**: Document text, hidden metadata, and author extraction. *(Status: Partial / Modular)*
+83. **QGIS GeoJSON Engine**: Spatial vector feature layer generator for geographic information systems. *(Status: Operational)*
+84. **OpenStreetMap Overpass API**: Infrastructure, building, and amenity reconnaissance surrounding coordinates. *(Status: Operational)*
+85. **GDELT Global Events**: Real-time global broadcast, print, and web news monitoring across 100+ languages. *(Status: Operational)*
+86. **OCCRP Aleph**: Investigative journalism archives, public records, and offshore leak databases. *(Status: Operational)*
+87. **FollowTheMoney (FtM)**: Corporate ownership, banking, and financial entity schema normalization. *(Status: Operational)*
+88. **Datasette Exporter**: Structured investigation SQLite database exporter. *(Status: Operational)*
+89. **IntelOwl Orchestrator**: Automated multi-analyzer threat intelligence orchestration. *(Status: Config Required)*
+90. **OpenOSINT (URLhaus)**: Open-source threat intelligence feed aggregator and active malware payload crosscheck. *(Status: Operational)*
+
+

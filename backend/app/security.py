@@ -47,3 +47,4 @@ class SecretVault:
         return {k: True for k in self._secrets.keys()}
 
 secret_vault = SecretVault()
+

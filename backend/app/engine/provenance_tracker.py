@@ -30,3 +30,4 @@ class ProvenanceTracker:
 
     def clear(self):
         self._records.clear()
+

@@ -41,3 +41,4 @@ class DiscoveryQueue:
                 self._queue.get_nowait()
             except Exception:
                 break
+

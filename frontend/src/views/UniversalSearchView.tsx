@@ -228,3 +228,4 @@ export const UniversalSearchView: React.FC<UniversalSearchViewProps> = ({
     </div>
   );
 };
+

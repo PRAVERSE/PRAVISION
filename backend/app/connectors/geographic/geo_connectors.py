@@ -1,4 +1,5 @@
 import httpx
+import urllib.parse
 from datetime import datetime
 from typing import List
 from app.connectors.base_connector import BaseConnector, ConnectorHealthStatus, ToolCategory, InvestigationRequest
@@ -218,3 +219,4 @@ class MapillaryConnector(BaseConnector):
                 )
             ]
         return []
+

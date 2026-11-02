@@ -25,10 +25,11 @@ interface ToolCenterViewProps {
 export const ToolCenterView: React.FC<ToolCenterViewProps> = ({ connectors, onRefresh }) => {
   const [search, setSearch] = useState('');
   const [selectedCategory, setSelectedCategory] = useState<string>('all');
+  const [selectedHealth, setSelectedHealth] = useState<string>('all');
   const [testingTool, setTestingTool] = useState<string | null>(null);
 
   const categories = [
-    { id: 'all', label: 'All Tools' },
+    { id: 'all', label: 'All Categories' },
     { id: 'username_social', label: 'Username & Social' },
     { id: 'email', label: 'Email' },
     { id: 'phone', label: 'Phone' },
@@ -45,7 +46,8 @@ export const ToolCenterView: React.FC<ToolCenterViewProps> = ({ connectors, onRe
                           c.display_name.toLowerCase().includes(search.toLowerCase()) ||
                           c.description.toLowerCase().includes(search.toLowerCase());
     const matchesCat = selectedCategory === 'all' || c.category === selectedCategory;
-    return matchesSearch && matchesCat;
+    const matchesHealth = selectedHealth === 'all' || c.health === selectedHealth;
+    return matchesSearch && matchesCat && matchesHealth;
   });
 
   const handleTest = async (name: string) => {
@@ -90,18 +92,33 @@ export const ToolCenterView: React.FC<ToolCenterViewProps> = ({ connectors, onRe
     <div className="p-8 max-w-7xl mx-auto space-y-6">
       <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 border-b border-[#26364B] pb-4">
         <div>
-          <h1 className="text-2xl font-extrabold text-[#F8FAFC]">PRAVISION Tool Center & Registry</h1>
+          <h1 className="text-2xl font-extrabold text-[#F8FAFC]">PRAVISION Tool Center &amp; Connector Matrix</h1>
           <p className="text-xs text-[#94A3B8]">
-            Complete 64-tool capability matrix. Real-time pre-flight verification, authentication status, and safety policy enforcement.
+            Complete 89-tool capability matrix (Phase 2 Expanded). Real-time pre-flight verification, authentication status, and safety policy enforcement.
           </p>
         </div>
-        <button
-          onClick={onRefresh}
-          className="flex items-center space-x-1.5 px-4 py-2 rounded-lg bg-[#121D2D] hover:bg-[#1E293B] text-sky-400 border border-[#26364B] text-xs font-medium cursor-pointer transition-all self-start"
-        >
-          <RefreshCw className="w-3.5 h-3.5" />
-          <span>Run All Health Checks</span>
-        </button>
+        <div className="flex items-center space-x-2">
+          <select
+            value={selectedHealth}
+            onChange={(e) => setSelectedHealth(e.target.value)}
+            className="bg-[#121D2D] border border-[#26364B] rounded-lg px-3 py-2 text-xs text-slate-200 focus:outline-none"
+          >
+            <option value="all">All Statuses ({connectors.length})</option>
+            <option value="operational">Operational</option>
+            <option value="config_required">Config Required</option>
+            <option value="auth_required">Auth Required</option>
+            <option value="subscription_required">Subscription Required</option>
+            <option value="restricted">Restricted</option>
+            <option value="partial">Partial</option>
+          </select>
+          <button
+            onClick={onRefresh}
+            className="flex items-center space-x-1.5 px-4 py-2 rounded-lg bg-[#121D2D] hover:bg-[#1E293B] text-sky-400 border border-[#26364B] text-xs font-medium cursor-pointer transition-all"
+          >
+            <RefreshCw className="w-3.5 h-3.5" />
+            <span>Run All Health Checks</span>
+          </button>
+        </div>
       </div>
 
       {/* Filters & Search */}
@@ -213,3 +230,4 @@ export const ToolCenterView: React.FC<ToolCenterViewProps> = ({ connectors, onRe
     </div>
   );
 };
+

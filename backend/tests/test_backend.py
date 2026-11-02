@@ -104,8 +104,144 @@ async def test_connector_registry():
     pimeyes_health = await pimeyes.check_health()
     assert pimeyes_health == "restricted"
 
+    # Verify 24 Candidate Connectors (Phase 2 Expanded)
+    candidate_names = [
+        "whatsmyname", "blackbird", "holehe", "urlscan", "crtsh",
+        "securitytrails", "greynoise", "abuseipdb", "misp", "yeti",
+        "opencti", "opensanctions", "graphistry", "networkx", "gephi",
+        "apache_tika", "qgis", "openstreetmap_overpass", "gdelt", "openaleph",
+        "followthemoney", "datasette", "intelowl", "openosint"
+    ]
+    for cname in candidate_names:
+        c = connector_registry.get_connector(cname)
+        assert c is not None, f"Candidate {cname} must be registered"
+        h = await c.check_health()
+        assert h in ("operational", "partial", "auth_required", "config_required", "subscription_required")
+
+@pytest.mark.asyncio
+async def test_storage_and_cases():
+    from app.storage.database import init_db, check_db_health
+    from app.storage.case_manager import case_manager
+    from app.storage.b2_storage import b2_storage
+
+    await init_db()
+    health = await check_db_health()
+    assert health["status"] == "healthy"
+
+    # Create Case
+    case = await case_manager.create_case(
+        title="Pytest Target Dossier",
+        description="Automated storage verification",
+        created_by="Automated Test",
+        classification="CONFIDENTIAL",
+        tags=["automated_test"]
+    )
+    assert case["case_number"].startswith("CASE-")
+    assert case["classification"] == "CONFIDENTIAL"
+
+    # List Cases
+    cases = await case_manager.list_cases()
+    assert len(cases) >= 1
+
+    # Evidence Vault Upload & SHA-256
+    test_bytes = b"IMMUTABLE_CHAIN_OF_CUSTODY_TEST_DATA"
+    res = await b2_storage.upload_evidence(test_bytes, "test_evidence.bin")
+    assert "file_hash" in res
+    assert res["file_size"] == len(test_bytes)
+
+    # Download & verify integrity
+    downloaded, hash_val = await b2_storage.download_evidence(res["file_key"])
+    assert downloaded == test_bytes
+    assert hash_val == res["file_hash"]
+
+    # Delete Case
+    deleted = await case_manager.delete_case(case["id"])
+    assert deleted is True
+
+def test_intelligence_capabilities():
+    from app.intelligence.entity_resolution import entity_resolution
+    from app.intelligence.graph_analytics import graph_analytics
+    from app.intelligence.timeline_engine import timeline_engine
+    from app.intelligence.threat_intel import threat_intel_engine
+    from app.intelligence.document_intel import document_intel
+    from app.intelligence.ai_assistant import intelligence_assistant
+
+    # 1. Entity Resolution
+    f1 = EvidenceFinding(
+        investigation_id="t1",
+        entity_type=EntityType.EMAIL,
+        entity_value="analyst@domain.com",
+        source_name="GHunt",
+        evidence_description="Email found"
+    )
+    f2 = EvidenceFinding(
+        investigation_id="t1",
+        entity_type=EntityType.USERNAME,
+        entity_value="analyst",
+        source_name="Sherlock",
+        evidence_description="Username found"
+    )
+    res = entity_resolution.resolve_findings([f1, f2])
+    assert res["unique_resolved_entities"] == 2
+    assert len(res["identity_clusters"]) >= 1
+
+    # 2. Graph Analytics (NetworkX)
+    nodes = [
+        {"id": "A", "label": "analyst", "type": "username"},
+        {"id": "B", "label": "analyst@domain.com", "type": "email"},
+        {"id": "C", "label": "domain.com", "type": "domain"},
+    ]
+    edges = [
+        {"source": "A", "target": "B", "relationship": "USES_EMAIL"},
+        {"source": "B", "target": "C", "relationship": "ON_DOMAIN"},
+    ]
+    analytics = graph_analytics.analyze_graph(nodes, edges)
+    assert analytics["nodes_count"] == 3
+    assert analytics["edges_count"] == 2
+    assert len(analytics["top_entities"]) == 3
+
+    path = graph_analytics.shortest_path(nodes, edges, "A", "C")
+    assert path == ["A", "B", "C"]
+
+    # 3. Timeline Engine
+    timeline = timeline_engine.process_timeline([f1, f2])
+    assert timeline["total_events"] == 2
+
+    # 4. Threat Intel Engine
+    f_threat = EvidenceFinding(
+        investigation_id="t1",
+        entity_type=EntityType.IP_ADDRESS,
+        entity_value="1.2.3.4",
+        source_name="GreyNoise",
+        raw_payload={"classification": "malicious", "actor": "TestBot"}
+    )
+    threat = threat_intel_engine.evaluate_threat_posture([f1, f_threat])
+    assert threat["overall_risk_score"] > 0
+    assert threat["is_known_malicious"] is True
+
+    # 5. Document Intel Engine
+    doc_res = document_intel.extract_entities_from_text("Alert: hacker@bad.com on 10.0.0.1 using CVE-2024-1234")
+    assert "hacker@bad.com" in doc_res["emails"]
+    assert "10.0.0.1" in doc_res["ip_addresses"]
+    assert "CVE-2024-1234" in doc_res["cves"]
+
+    # 6. AI Assistant Copilot
+    briefing = intelligence_assistant.generate_executive_briefing(
+        target_input="analyst",
+        target_type="username",
+        findings=[f1, f2, f_threat],
+        graph_data={"nodes": nodes, "edges": edges},
+        threat_posture=threat
+    )
+    assert "Executive Intelligence Assessment" in briefing["title"]
+    assert len(briefing["recommended_next_actions"]) > 0
+
+    qa = intelligence_assistant.answer_query("What email was observed?", "analyst", [f1, f2], {"nodes": nodes, "edges": edges})
+    assert qa["total_matches"] >= 1
+
 def test_privacy_controller():
     sanitized = privacy_controller.sanitize_log_message("User email is john.doe@agency.gov with phone +12025550199 and token api_key: secret_xyz1234567890")
     assert "john.doe@agency.gov" not in sanitized
     assert "[REDACTED_EMAIL]" in sanitized
     assert "[REDACTED_SECRET]" in sanitized
+

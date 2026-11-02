@@ -9,7 +9,7 @@ class DepthController:
         self.current_entity_count = 0
 
     def can_expand(self, current_depth: int) -> bool:
-        if current_depth >= self.max_depth:
+        if current_depth > self.max_depth:
             return False
         if self.current_entity_count >= self.max_entities:
             return False
@@ -23,3 +23,4 @@ class DepthController:
 
     def reset(self):
         self.current_entity_count = 0
+

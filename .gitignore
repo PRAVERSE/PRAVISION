@@ -16,6 +16,10 @@ backend/temp_runtime/
 temp_runtime/
 *.m
 creds.m
+*.db
+*.db-shm
+*.db-wal
 
 # Scratch
 scratch/
+

@@ -1,4 +1,16 @@
-import { ClassifiedInput, ActiveInvestigation, EvidenceFinding, IntelligenceGraph, ConnectorManifest } from '../types/osint';
+import {
+  ClassifiedInput,
+  ActiveInvestigation,
+  EvidenceFinding,
+  IntelligenceGraph,
+  ConnectorManifest,
+  CaseDossier,
+  StorageStatus,
+  GraphAnalyticsResult,
+  TimelineResult,
+  ThreatPostureResult,
+  AiBriefingResult
+} from '../types/osint';
 
 const API_BASE = '/api';
 
@@ -112,5 +124,117 @@ export const osintApi = {
     const res = await fetch(`${API_BASE}/settings/purge`, { method: 'POST' });
     if (!res.ok) throw new Error(await res.text());
     return res.json();
+  },
+
+  // Case Dossiers (Stage 5)
+  async listCases(): Promise<CaseDossier[]> {
+    const res = await fetch(`${API_BASE}/cases`);
+    if (!res.ok) throw new Error(await res.text());
+    return res.json();
+  },
+
+  async createCase(payload: { title: string; description?: string; classification?: string; tags?: string[] }): Promise<CaseDossier> {
+    const res = await fetch(`${API_BASE}/cases`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+    if (!res.ok) throw new Error(await res.text());
+    return res.json();
+  },
+
+  async getCase(caseId: string): Promise<CaseDossier> {
+    const res = await fetch(`${API_BASE}/cases/${caseId}`);
+    if (!res.ok) throw new Error(await res.text());
+    return res.json();
+  },
+
+  async deleteCase(caseId: string): Promise<any> {
+    const res = await fetch(`${API_BASE}/cases/${caseId}`, { method: 'DELETE' });
+    if (!res.ok) throw new Error(await res.text());
+    return res.json();
+  },
+
+  async saveActiveToCase(caseId: string): Promise<any> {
+    const res = await fetch(`${API_BASE}/cases/${caseId}/save-active`, { method: 'POST' });
+    if (!res.ok) throw new Error(await res.text());
+    return res.json();
+  },
+
+  // Storage & Vault (Stage 5)
+  async getStorageStatus(): Promise<StorageStatus> {
+    const res = await fetch(`${API_BASE}/storage/status`);
+    if (!res.ok) throw new Error(await res.text());
+    return res.json();
+  },
+
+  async uploadVaultEvidence(file: File, investigationId?: string): Promise<any> {
+    const formData = new FormData();
+    formData.append('file', file);
+    if (investigationId) formData.append('investigation_id', investigationId);
+    const res = await fetch(`${API_BASE}/storage/evidence/upload`, {
+      method: 'POST',
+      body: formData
+    });
+    if (!res.ok) throw new Error(await res.text());
+    return res.json();
+  },
+
+  // Intelligence Engine (Stage 6)
+  async getEntityResolution(): Promise<any> {
+    const res = await fetch(`${API_BASE}/intelligence/entity-resolution`);
+    if (!res.ok) throw new Error(await res.text());
+    return res.json();
+  },
+
+  async getGraphAnalytics(): Promise<GraphAnalyticsResult> {
+    const res = await fetch(`${API_BASE}/intelligence/graph-analytics`);
+    if (!res.ok) throw new Error(await res.text());
+    return res.json();
+  },
+
+  async getShortestPath(source: string, target: string): Promise<{ found: boolean; path: string[] }> {
+    const res = await fetch(`${API_BASE}/intelligence/shortest-path?source=${encodeURIComponent(source)}&target=${encodeURIComponent(target)}`);
+    if (!res.ok) throw new Error(await res.text());
+    return res.json();
+  },
+
+  async getTimeline(): Promise<TimelineResult> {
+    const res = await fetch(`${API_BASE}/intelligence/timeline`);
+    if (!res.ok) throw new Error(await res.text());
+    return res.json();
+  },
+
+  async getThreatPosture(): Promise<ThreatPostureResult> {
+    const res = await fetch(`${API_BASE}/intelligence/threat-posture`);
+    if (!res.ok) throw new Error(await res.text());
+    return res.json();
+  },
+
+  async scanDocumentText(text: string): Promise<any> {
+    const res = await fetch(`${API_BASE}/intelligence/document/scan`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text })
+    });
+    if (!res.ok) throw new Error(await res.text());
+    return res.json();
+  },
+
+  async getAiBriefing(): Promise<AiBriefingResult> {
+    const res = await fetch(`${API_BASE}/intelligence/briefing`);
+    if (!res.ok) throw new Error(await res.text());
+    return res.json();
+  },
+
+  async askAiAssistant(query: string): Promise<any> {
+    const res = await fetch(`${API_BASE}/intelligence/ask`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ query })
+    });
+    if (!res.ok) throw new Error(await res.text());
+    return res.json();
   }
 };
+

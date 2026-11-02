@@ -60,3 +60,4 @@ class SolarPositionCalculator:
         }
 
 solar_calculator = SolarPositionCalculator()
+

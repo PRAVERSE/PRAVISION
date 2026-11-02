@@ -214,3 +214,4 @@ class OSINTFrameworkConnector(BaseConnector):
                 verification_status="methodology_catalog"
             )
         ]
+

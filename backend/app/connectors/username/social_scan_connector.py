@@ -45,3 +45,4 @@ class SocialScanConnector(BaseConnector):
                     pass
 
         return findings
+

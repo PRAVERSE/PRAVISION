@@ -14,8 +14,14 @@ import {
   Wrench, 
   FileText, 
   Settings, 
-  ChevronLeft, 
-  ChevronRight 
+  FolderLock,
+  Clock,
+  ShieldAlert,
+  Database,
+  HardDrive,
+  Bot,
+  ChevronLeft,
+  ChevronRight
 } from 'lucide-react';
 
 interface SidebarProps {
@@ -32,24 +38,33 @@ export const Sidebar: React.FC<SidebarProps> = ({
   const [collapsed, setCollapsed] = useState(false);
 
   const navItems = [
-    { id: 'overview', label: 'Overview', icon: LayoutDashboard },
-    { id: 'search', label: 'New Investigation', icon: Search, highlight: true },
+    // Mission Control
+    { id: 'command_center', label: 'Command Center', icon: LayoutDashboard },
+    { id: 'search', label: 'Universal Intake', icon: Search, highlight: true },
     { id: 'live', label: 'Live Investigation', icon: Radio, badge: hasActiveInvestigation ? 'Active' : null },
-    { id: 'graph', label: 'Intelligence Graph', icon: Share2 },
-    { id: 'map', label: 'Global Map', icon: Globe },
+    { id: 'cases', label: 'Case Dossiers', icon: FolderLock },
+
+    // Analytical Workspaces
+    { id: 'graph', label: 'Gotham Link Graph', icon: Share2 },
+    { id: 'map', label: 'Global Tactical Map', icon: Globe },
+    { id: 'timeline', label: 'Timeline Analysis', icon: Clock },
+    { id: 'threat_intel', label: 'Threat Intel & IOCs', icon: ShieldAlert },
+    { id: 'entity_db', label: 'Entity Database', icon: Database },
+    { id: 'evidence_vault', label: 'Evidence Center', icon: HardDrive },
+    { id: 'ai_assistant', label: 'AI Intelligence Copilot', icon: Bot },
     
     // Domain specific modes
-    { id: 'image_intel', label: 'Image Intelligence', icon: Image },
+    { id: 'image_intel', label: 'Image Forensics', icon: Image },
     { id: 'email_intel', label: 'Email Intelligence', icon: Mail },
     { id: 'username_intel', label: 'Username Intelligence', icon: User },
     { id: 'phone_intel', label: 'Phone Intelligence', icon: Phone },
-    { id: 'website_intel', label: 'Website Intelligence', icon: Globe2 },
-    { id: 'infra_intel', label: 'Infrastructure Intel', icon: Server },
+    { id: 'website_intel', label: 'Domain & Web Intel', icon: Globe2 },
+    { id: 'infra_intel', label: 'Infrastructure Recon', icon: Server },
     
     // Tools, Reports, Settings
-    { id: 'tool_center', label: 'Tool Center', icon: Wrench },
+    { id: 'tool_center', label: 'Tool Center (89)', icon: Wrench },
     { id: 'reports', label: 'Reports & Export', icon: FileText },
-    { id: 'settings', label: 'Settings', icon: Settings }
+    { id: 'settings', label: 'System Admin', icon: Settings }
   ];
 
   return (
@@ -109,3 +124,4 @@ export const Sidebar: React.FC<SidebarProps> = ({
     </aside>
   );
 };
+

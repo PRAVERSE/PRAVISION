@@ -119,3 +119,4 @@ class NumverifyConnector(BaseConnector):
 
     async def execute(self, request: InvestigationRequest) -> List[EvidenceFinding]:
         return []
+

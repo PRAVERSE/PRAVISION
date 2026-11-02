@@ -106,6 +106,34 @@ from app.connectors.restricted.restricted_connectors import (
     FaceCheckConnector
 )
 
+# 5.10 Candidate & Expanded Workstation Connectors (Phase 2)
+from app.connectors.candidates.candidate_connectors import (
+    WhatsMyNameConnector,
+    BlackbirdConnector,
+    HoleheConnector,
+    UrlscanConnector,
+    CrtShConnector,
+    SecurityTrailsConnector,
+    GreyNoiseConnector,
+    AbuseIPDBConnector,
+    MISPConnector,
+    YetiConnector,
+    OpenCTIConnector,
+    OpenSanctionsConnector,
+    GraphistryConnector,
+    NetworkXConnector,
+    GephiConnector,
+    ApacheTikaConnector,
+    QGISConnector,
+    OpenStreetMapOverpassConnector,
+    GDELTConnector,
+    OpenAlephConnector,
+    FollowTheMoneyConnector,
+    DatasetteConnector,
+    IntelOwlConnector,
+    OpenOSINTConnector
+)
+
 class ConnectorRegistry:
     """Central registry and lifecycle manager for all PRAVISION connectors."""
 
@@ -197,6 +225,32 @@ class ConnectorRegistry:
             BashHotConnector(),
             PimEyesConnector(),
             FaceCheckConnector(),
+
+            # 24 Candidates (Phase 2 Intelligence Workstation)
+            WhatsMyNameConnector(),
+            BlackbirdConnector(),
+            HoleheConnector(),
+            UrlscanConnector(),
+            CrtShConnector(),
+            SecurityTrailsConnector(),
+            GreyNoiseConnector(),
+            AbuseIPDBConnector(),
+            MISPConnector(),
+            YetiConnector(),
+            OpenCTIConnector(),
+            OpenSanctionsConnector(),
+            GraphistryConnector(),
+            NetworkXConnector(),
+            GephiConnector(),
+            ApacheTikaConnector(),
+            QGISConnector(),
+            OpenStreetMapOverpassConnector(),
+            GDELTConnector(),
+            OpenAlephConnector(),
+            FollowTheMoneyConnector(),
+            DatasetteConnector(),
+            IntelOwlConnector(),
+            OpenOSINTConnector(),
         ]
 
         for inst in instances:
@@ -222,3 +276,4 @@ class ConnectorRegistry:
             c._last_check_time = now
 
 connector_registry = ConnectorRegistry()
+

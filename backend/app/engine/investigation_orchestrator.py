@@ -252,3 +252,4 @@ class InvestigationOrchestrator:
         privacy_controller.purge_all_ephemeral_data()
 
 orchestrator = InvestigationOrchestrator()
+

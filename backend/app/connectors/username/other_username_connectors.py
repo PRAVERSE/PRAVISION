@@ -179,3 +179,4 @@ class FacebookSearchConnector(BaseConnector):
                 verification_status="public_index_reference"
             )
         ]
+

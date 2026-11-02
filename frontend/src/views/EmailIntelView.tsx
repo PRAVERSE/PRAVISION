@@ -78,3 +78,4 @@ export const EmailIntelView: React.FC<EmailIntelViewProps> = ({ onStartInvestiga
     </div>
   );
 };
+

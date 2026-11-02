@@ -77,3 +77,4 @@ export const PhoneIntelView: React.FC<PhoneIntelViewProps> = ({ onStartInvestiga
     </div>
   );
 };
+

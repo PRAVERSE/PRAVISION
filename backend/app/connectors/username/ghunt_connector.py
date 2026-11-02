@@ -149,3 +149,4 @@ class GHuntConnector(BaseConnector):
             self._last_error = str(e)
 
         return findings
+

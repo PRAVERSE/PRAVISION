@@ -137,3 +137,4 @@ class BaseConnector(ABC):
             last_error=self._last_error,
             supported_entity_types=self.supported_entity_types
         )
+

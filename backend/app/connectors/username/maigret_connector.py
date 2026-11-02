@@ -66,3 +66,4 @@ class MaigretConnector(BaseConnector):
                     continue
 
         return findings
+

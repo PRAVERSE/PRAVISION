@@ -73,8 +73,8 @@ PRAVISION enforces a strict **Zero-Persistence Policy**:
 
 ---
 
-## 🧰 Complete 64-Tool Registry
-PRAVISION integrates a complete catalogue across 9 categories. See [CONNECTOR_CATALOGUE.md](file:///C:/Users/hp/OneDrive/Desktop/PRAVISION/CONNECTOR_CATALOGUE.md) for full capability manifests, official repositories, and pre-flight validation status.
+## 🧰 Complete 89-Tool Registry
+PRAVISION integrates a complete catalogue across 10 categories (65 base + 24 candidate extensions). See [CONNECTOR_CATALOGUE.md](file:///C:/Users/hp/OneDrive/Desktop/PRAVISION/CONNECTOR_CATALOGUE.md) for full capability manifests, official repositories, and truthful health status reporting.
 
 ### GHunt 2.3.4 (Spider Edition) Integration
 - Integrates with the existing Windows executable `C:\Users\hp\.local\bin\ghunt.exe`.
@@ -84,6 +84,9 @@ PRAVISION integrates a complete catalogue across 9 categories. See [CONNECTOR_CA
 ---
 
 ## 💻 Technical Architecture
-- **Backend**: Python 3.12, FastAPI, Pydantic v2, HTTPX, WebSockets, dnspython, Pillow, ExifRead, ReportLab, pytest.
-- **Frontend**: React 19, TypeScript, Vite, Tailwind CSS v4, Lucide React, Leaflet, interactive SVG graph topology.
-- **Network**: Binds exclusively to `127.0.0.1` by default.
+- **Backend**: Python 3.12, FastAPI, Pydantic v2, HTTPX, WebSockets, dnspython, Pillow, ExifRead, ReportLab, NetworkX, SQLAlchemy 2.0 Async, aiosqlite, asyncpg, boto3 (B2 S3), pytest.
+- **Frontend**: React 19, TypeScript, Vite, Tailwind CSS v4, Lucide React, Leaflet, interactive link graph topology, Gotham-inspired analytical workspaces.
+- **Storage Layer**: Dual-mode architecture — standalone local SQLite with Write-Ahead Logging (WAL) and local filesystem evidence vault out of the box, with instant zero-code upgrade to PostgreSQL and Backblaze B2 S3 via environment variables (`POSTGRES_URL`, `B2_APPLICATION_KEY_ID`, `B2_APPLICATION_KEY`, `B2_BUCKET_NAME`).
+- **Intelligence Suite**: Entity resolution & contradiction detection, NetworkX graph centrality & community detection, multi-timestamp timeline sequencing & activity burst detection, threat posture scoring, document regex entity extraction, and grounded AI analytical assistant.
+- **Network**: Binds exclusively to `127.0.0.1:8000` by default.
+

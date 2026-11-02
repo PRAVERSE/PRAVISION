@@ -2,10 +2,18 @@ import React, { useState, useEffect, useRef } from 'react';
 import { Header } from './components/Header';
 import { Sidebar } from './components/Sidebar';
 import { OverviewView } from './views/OverviewView';
+import { CommandCenterView } from './views/CommandCenterView';
 import { UniversalSearchView } from './views/UniversalSearchView';
 import { LiveInvestigationView } from './views/LiveInvestigationView';
 import { IntelligenceGraphView } from './views/IntelligenceGraphView';
+import { GothamGraphView } from './views/GothamGraphView';
 import { GlobalMapView } from './views/GlobalMapView';
+import { CasesView } from './views/CasesView';
+import { TimelineView } from './views/TimelineView';
+import { ThreatIntelView } from './views/ThreatIntelView';
+import { EntityDatabaseView } from './views/EntityDatabaseView';
+import { EvidenceCenterView } from './views/EvidenceCenterView';
+import { AiAssistantView } from './views/AiAssistantView';
 import { ImageIntelView } from './views/ImageIntelView';
 import { EmailIntelView } from './views/EmailIntelView';
 import { UsernameIntelView } from './views/UsernameIntelView';
@@ -170,13 +178,44 @@ export const App: React.FC = () => {
         />
 
         <main className="flex-1 overflow-y-auto bg-[#080D16]">
-          {currentView === 'overview' && (
-            <OverviewView
-              investigation={activeInvestigation}
-              connectors={connectors}
-              settings={settings}
+          {(currentView === 'overview' || currentView === 'command_center') && (
+            <CommandCenterView
+              activeInvestigation={activeInvestigation}
+              findings={findings}
+              graph={graph}
               onNavigate={setCurrentView}
             />
+          )}
+
+          {currentView === 'cases' && (
+            <CasesView
+              activeInvestigation={activeInvestigation}
+            />
+          )}
+
+          {currentView === 'timeline' && (
+            <TimelineView />
+          )}
+
+          {currentView === 'threat_intel' && (
+            <ThreatIntelView />
+          )}
+
+          {currentView === 'entity_db' && (
+            <EntityDatabaseView
+              findings={findings}
+            />
+          )}
+
+          {currentView === 'evidence_vault' && (
+            <EvidenceCenterView
+              findings={findings}
+              investigationId={activeInvestigation?.id}
+            />
+          )}
+
+          {currentView === 'ai_assistant' && (
+            <AiAssistantView />
           )}
 
           {currentView === 'search' && (
@@ -196,9 +235,9 @@ export const App: React.FC = () => {
           )}
 
           {currentView === 'graph' && (
-            <IntelligenceGraphView
+            <GothamGraphView
               graph={graph}
-              onRefresh={checkActiveInvestigation}
+              findings={findings}
             />
           )}
 

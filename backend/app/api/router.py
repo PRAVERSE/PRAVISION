@@ -1,7 +1,9 @@
 import asyncio
 import shutil
+import uuid
+import json
 from pathlib import Path
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List
 from fastapi import APIRouter, HTTPException, UploadFile, File, Form, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse, Response
 
@@ -14,6 +16,16 @@ from app.config import settings
 from app.privacy.privacy_controller import privacy_controller
 from app.media_forensics.metadata_extractor import metadata_extractor, hash_calculator
 from app.media_forensics.forensic_analyzer import forensic_analyzer
+
+from app.storage.database import check_db_health
+from app.storage.case_manager import case_manager
+from app.storage.b2_storage import b2_storage
+from app.intelligence.entity_resolution import entity_resolution
+from app.intelligence.graph_analytics import graph_analytics
+from app.intelligence.timeline_engine import timeline_engine
+from app.intelligence.threat_intel import threat_intel_engine
+from app.intelligence.document_intel import document_intel
+from app.intelligence.ai_assistant import intelligence_assistant
 
 router = APIRouter()
 
@@ -232,3 +244,173 @@ async def purge_all_data():
     orchestrator.clear_investigation()
     count = privacy_controller.purge_all_ephemeral_data()
     return {"status": "purged", "items_removed": count}
+
+# ----------------- CASES & DOSSIERS (STAGE 5) -----------------
+
+@router.get("/cases")
+async def list_cases(limit: int = 50, offset: int = 0):
+    return await case_manager.list_cases(limit=limit, offset=offset)
+
+@router.post("/cases")
+async def create_case(payload: Dict[str, Any]):
+    title = payload.get("title", "").strip()
+    if not title:
+        raise HTTPException(status_code=400, detail="Case title is required.")
+    return await case_manager.create_case(
+        title=title,
+        description=payload.get("description"),
+        created_by=payload.get("created_by", "Analyst"),
+        classification=payload.get("classification", "UNCLASSIFIED"),
+        tags=payload.get("tags", [])
+    )
+
+@router.get("/cases/{case_id}")
+async def get_case(case_id: str):
+    case = await case_manager.get_case(case_id)
+    if not case:
+        raise HTTPException(status_code=404, detail="Case not found.")
+    return case
+
+@router.delete("/cases/{case_id}")
+async def delete_case(case_id: str):
+    success = await case_manager.delete_case(case_id)
+    if not success:
+        raise HTTPException(status_code=404, detail="Case not found.")
+    return {"status": "deleted", "case_id": case_id}
+
+@router.post("/cases/{case_id}/save-active")
+async def save_active_investigation_to_case(case_id: str):
+    inv = orchestrator.get_active()
+    if not inv:
+        raise HTTPException(status_code=400, detail="No active investigation in memory to save.")
+    findings = orchestrator.get_findings()
+    graph = orchestrator.get_graph().dict()
+    try:
+        return await case_manager.save_investigation_to_case(
+            case_id=case_id,
+            investigation_id=inv.id,
+            root_input=inv.root_input,
+            root_type=inv.root_type.value if hasattr(inv.root_type, "value") else str(inv.root_type),
+            mode=inv.mode,
+            findings=findings,
+            graph_nodes=graph.get("nodes", []),
+            graph_edges=graph.get("edges", [])
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+# ----------------- STORAGE & VAULT (STAGE 5) -----------------
+
+@router.get("/storage/status")
+async def get_storage_status():
+    db_health = await check_db_health()
+    b2_status = b2_storage.get_status()
+    return {
+        "database": db_health,
+        "object_storage": b2_status
+    }
+
+@router.post("/storage/evidence/upload")
+async def upload_evidence_to_vault(file: UploadFile = File(...), investigation_id: Optional[str] = Form(None)):
+    data = await file.read()
+    res = await b2_storage.upload_evidence(
+        data=data,
+        filename=file.filename or "evidence_file",
+        content_type=file.content_type or "application/octet-stream",
+        investigation_id=investigation_id
+    )
+    return res
+
+@router.get("/storage/evidence/{file_key:path}")
+async def download_evidence_from_vault(file_key: str):
+    try:
+        data, sha256_hash = await b2_storage.download_evidence(file_key)
+        return Response(
+            content=data,
+            media_type="application/octet-stream",
+            headers={
+                "Content-Disposition": f"attachment; filename={Path(file_key).name}",
+                "X-Evidence-SHA256": sha256_hash
+            }
+        )
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail="Evidence file not found.")
+
+# ----------------- INTELLIGENCE WORKSTATION (STAGE 6) -----------------
+
+@router.get("/intelligence/entity-resolution")
+async def get_entity_resolution():
+    findings = orchestrator.get_findings()
+    return entity_resolution.resolve_findings(findings)
+
+@router.get("/intelligence/graph-analytics")
+async def get_graph_analytics():
+    graph = orchestrator.get_graph().dict()
+    return graph_analytics.analyze_graph(graph.get("nodes", []), graph.get("edges", []))
+
+@router.get("/intelligence/shortest-path")
+async def get_shortest_path(source: str, target: str):
+    graph = orchestrator.get_graph().dict()
+    path = graph_analytics.shortest_path(graph.get("nodes", []), graph.get("edges", []), source, target)
+    if not path:
+        return {"found": False, "path": []}
+    return {"found": True, "path": path}
+
+@router.get("/intelligence/timeline")
+async def get_timeline():
+    findings = orchestrator.get_findings()
+    return timeline_engine.process_timeline(findings)
+
+@router.get("/intelligence/threat-posture")
+async def get_threat_posture():
+    findings = orchestrator.get_findings()
+    return threat_intel_engine.evaluate_threat_posture(findings)
+
+@router.post("/intelligence/document/scan")
+async def scan_document_text(payload: Dict[str, str]):
+    text = payload.get("text", "")
+    if not text.strip():
+        raise HTTPException(status_code=400, detail="Text cannot be empty.")
+    return document_intel.extract_entities_from_text(text)
+
+@router.get("/intelligence/briefing")
+async def get_ai_briefing():
+    inv = orchestrator.get_active()
+    if not inv:
+        return {"error": "No active investigation in memory."}
+    findings = orchestrator.get_findings()
+    graph = orchestrator.get_graph().dict()
+    threat = threat_intel_engine.evaluate_threat_posture(findings)
+    return intelligence_assistant.generate_executive_briefing(
+        target_input=inv.root_input,
+        target_type=inv.root_type.value if hasattr(inv.root_type, "value") else str(inv.root_type),
+        findings=findings,
+        graph_data=graph,
+        threat_posture=threat
+    )
+
+@router.post("/intelligence/ask")
+async def ask_ai_assistant(payload: Dict[str, str]):
+    query = payload.get("query", "").strip()
+    if not query:
+        raise HTTPException(status_code=400, detail="Query cannot be empty.")
+    inv = orchestrator.get_active()
+    target_input = inv.root_input if inv else "Global Intelligence Scope"
+    findings = orchestrator.get_findings()
+    graph = orchestrator.get_graph().dict()
+    return intelligence_assistant.answer_query(query, target_input, findings, graph)
+
+@router.get("/intelligence/export/gexf")
+async def export_gephi_gexf():
+    inv = orchestrator.get_active()
+    if not inv:
+        raise HTTPException(status_code=400, detail="No active investigation in memory.")
+    graph = orchestrator.get_graph().dict()
+    gexf_content = graph_analytics.export_gexf(graph.get("nodes", []), graph.get("edges", []))
+    return Response(
+        content=gexf_content,
+        media_type="application/xml",
+        headers={"Content-Disposition": f"attachment; filename=pravision_{inv.id}.gexf"}
+    )
+
+

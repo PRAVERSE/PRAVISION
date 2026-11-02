@@ -254,3 +254,4 @@ export const ImageIntelView: React.FC = () => {
     </div>
   );
 };
+

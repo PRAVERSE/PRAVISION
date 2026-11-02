@@ -226,3 +226,4 @@ export const GlobalMapView: React.FC<GlobalMapViewProps> = ({ findings }) => {
     </div>
   );
 };
+

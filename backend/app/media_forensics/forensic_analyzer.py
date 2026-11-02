@@ -61,3 +61,4 @@ class MediaForensicAnalyzer:
         return result
 
 forensic_analyzer = MediaForensicAnalyzer()
+

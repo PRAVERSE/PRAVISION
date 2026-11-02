@@ -240,3 +240,4 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ settings, onRefreshS
     </div>
   );
 };
+

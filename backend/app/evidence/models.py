@@ -48,7 +48,7 @@ class EvidenceFinding(BaseModel):
     source_name: str
     source_url: Optional[str] = None
     collection_timestamp: datetime = Field(default_factory=datetime.utcnow)
-    evidence_description: str
+    evidence_description: str = Field(default="")
     match_type: MatchType = MatchType.POSSIBLE_MATCH
     confidence: ConfidenceLevel = ConfidenceLevel.UNVERIFIED
     verification_status: str = "unverified"
@@ -79,3 +79,4 @@ class GraphEdge(BaseModel):
 class IntelligenceGraph(BaseModel):
     nodes: List[GraphNode] = Field(default_factory=list)
     edges: List[GraphEdge] = Field(default_factory=list)
+

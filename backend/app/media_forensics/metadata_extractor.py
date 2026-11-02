@@ -107,3 +107,4 @@ class MediaHashCalculator:
 
 metadata_extractor = MediaMetadataExtractor()
 hash_calculator = MediaHashCalculator()
+

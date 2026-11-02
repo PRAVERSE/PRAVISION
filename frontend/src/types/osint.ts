@@ -124,3 +124,108 @@ export interface ClassifiedInput {
   authorization_note?: string;
   expected_scope: string;
 }
+
+export interface CaseDossier {
+  id: string;
+  case_number: string;
+  title: string;
+  description?: string;
+  created_by: string;
+  status: 'active' | 'closed' | 'archived' | 'suspended';
+  classification: 'UNCLASSIFIED' | 'RESTRICTED' | 'CONFIDENTIAL' | 'SECRET';
+  tags: string[];
+  created_at: string;
+  updated_at?: string;
+  investigations?: any[];
+  entities_count?: number;
+  evidence_count?: number;
+}
+
+export interface StorageStatus {
+  database: {
+    status: string;
+    backend: string;
+    latency_ms: number;
+    is_postgres: boolean;
+    error?: string;
+  };
+  object_storage: {
+    b2_cloud_configured: boolean;
+    b2_endpoint?: string;
+    b2_bucket?: string;
+    storage_mode: string;
+    local_vault_path: string;
+    local_vault_file_count: number;
+    local_vault_size_bytes: number;
+  };
+}
+
+export interface GraphAnalyticsResult {
+  nodes_count: number;
+  edges_count: number;
+  density: number;
+  connected_components: number;
+  top_entities: Array<{
+    id: string;
+    label: string;
+    type: string;
+    degree_centrality: number;
+    betweenness_centrality: number;
+    pagerank: number;
+    community_id: number;
+  }>;
+  all_metrics: Record<string, any>;
+  communities_count: number;
+}
+
+export interface TimelineEvent {
+  id: string;
+  timestamp: string;
+  event_type: string;
+  entity_value: string;
+  source: string;
+  confidence: string;
+  summary: string;
+  raw_metadata: Record<string, any>;
+}
+
+export interface TimelineResult {
+  total_events: number;
+  earliest_event?: string;
+  latest_event?: string;
+  events: TimelineEvent[];
+  detected_bursts: Array<{
+    start_time: string;
+    event_count: number;
+    description: string;
+  }>;
+}
+
+export interface ThreatPostureResult {
+  overall_risk_score: number;
+  severity_level: 'BENIGN' | 'LOW' | 'MODERATE' | 'HIGH' | 'CRITICAL';
+  is_known_malicious: boolean;
+  indicators: Array<{ type: string; detail: string }>;
+  sanctions_matches: Array<{ entity: string; score: number; datasets: string[] }>;
+  identified_actors: string[];
+  assessment_timestamp: string;
+}
+
+export interface AiBriefingResult {
+  title: string;
+  generated_at: string;
+  target: { input: string; type: string };
+  metrics: {
+    total_findings: number;
+    sources_queried: string[];
+    graph_nodes: number;
+    graph_edges: number;
+    high_confidence_findings: number;
+  };
+  executive_summary: string;
+  intelligence_gaps: string[];
+  formulated_hypotheses: Array<{ title: string; confidence: string; reasoning: string }>;
+  recommended_next_actions: string[];
+}
+
+

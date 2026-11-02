@@ -186,3 +186,4 @@ class ReportGenerator:
         return pdf_bytes
 
 report_generator = ReportGenerator()
+

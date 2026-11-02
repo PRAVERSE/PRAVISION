@@ -98,3 +98,4 @@ class FaceCheckConnector(BaseConnector):
 
     async def execute(self, request: InvestigationRequest) -> List[EvidenceFinding]:
         return []
+

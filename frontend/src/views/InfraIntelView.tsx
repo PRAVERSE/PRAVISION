@@ -81,3 +81,4 @@ export const InfraIntelView: React.FC<InfraIntelViewProps> = ({ onStartInvestiga
     </div>
   );
 };
+

@@ -70,3 +70,4 @@ class SherlockConnector(BaseConnector):
                     continue
 
         return findings
+

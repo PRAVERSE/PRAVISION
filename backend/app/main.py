@@ -19,6 +19,11 @@ logger = logging.getLogger("pravision.main")
 async def lifespan(app: FastAPI):
     logger.info("Initializing PRAVISION Intelligence Platform...")
     privacy_controller.purge_all_ephemeral_data()
+    from app.storage.database import init_db
+    try:
+        await init_db()
+    except Exception as e:
+        logger.error(f"Failed to initialize database: {e}")
     asyncio.create_task(connector_registry.run_all_health_checks())
     yield
     logger.info("Shutting down PRAVISION. Purging ephemeral investigation buffers...")
