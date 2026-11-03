@@ -1,4 +1,5 @@
 import os
+import asyncio
 import logging
 import urllib.parse
 from pathlib import Path
@@ -73,16 +74,46 @@ async def get_db_session() -> AsyncGenerator[AsyncSession, None]:
             await session.close()
 
 async def init_db():
-    """Initializes schema and tables."""
-    from app.storage.models_db import CaseModel, InvestigationModel, EntityModel, RelationshipModel, EvidenceModel, AuditLogModel
-    async with engine.begin() as conn:
-        if not IS_POSTGRES:
-            # Enable WAL mode for high performance SQLite concurrency
-            await conn.execute(text("PRAGMA journal_mode=WAL;"))
-            await conn.execute(text("PRAGMA foreign_keys=ON;"))
-        await conn.run_sync(Base.metadata.create_all)
-    backend_name = "Neon Lakebase Postgres" if IS_NEON else ("PostgreSQL" if IS_POSTGRES else "Local SQLite (WAL)")
-    logger.info(f"Database initialized successfully on {backend_name}")
+    """Initializes schema, migrations, and tables with resilient retry."""
+    from app.storage.models_db import (
+        UserModel, CaseMembershipModel, RevokedTokenModel,
+        CaseModel, InvestigationModel, EntityModel, RelationshipModel, EvidenceModel, AuditLogModel
+    )
+    for attempt in range(1, 4):
+        try:
+            async with engine.begin() as conn:
+                if not IS_POSTGRES:
+                    # Enable WAL mode for high performance SQLite concurrency
+                    await conn.execute(text("PRAGMA journal_mode=WAL;"))
+                    await conn.execute(text("PRAGMA foreign_keys=ON;"))
+                await conn.run_sync(Base.metadata.create_all)
+
+                # Idempotent column migrations for existing instances
+                if IS_POSTGRES:
+                    try:
+                        await conn.execute(text("ALTER TABLE cases ADD COLUMN IF NOT EXISTS owner_id VARCHAR(36);"))
+                        await conn.execute(text("ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS actor_id VARCHAR(36);"))
+                        await conn.execute(text("ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS outcome VARCHAR(32) DEFAULT 'success';"))
+                    except Exception as e:
+                        logger.warning(f"Migration notice: {e}")
+                else:
+                    for query in [
+                        "ALTER TABLE cases ADD COLUMN owner_id VARCHAR(36);",
+                        "ALTER TABLE audit_logs ADD COLUMN actor_id VARCHAR(36);",
+                        "ALTER TABLE audit_logs ADD COLUMN outcome VARCHAR(32) DEFAULT 'success';"
+                    ]:
+                        try:
+                            await conn.execute(text(query))
+                        except Exception:
+                            pass
+            backend_name = "Neon Lakebase Postgres" if IS_NEON else ("PostgreSQL" if IS_POSTGRES else "Local SQLite (WAL)")
+            logger.info(f"Database initialized successfully on {backend_name}")
+            return
+        except Exception as e:
+            if attempt == 3:
+                raise
+            logger.warning(f"Database initialization attempt {attempt} failed ({e}), retrying in 1s...")
+            await asyncio.sleep(1.0)
 
 async def check_db_health() -> Dict[str, Any]:
     """Health check endpoint for DB engine."""

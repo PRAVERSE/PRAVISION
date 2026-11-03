@@ -6,22 +6,28 @@ import {
   Settings, 
   Search, 
   Layers, 
-  FileText 
+  FileText,
+  User,
+  ShieldCheck
 } from 'lucide-react';
-import { ActiveInvestigation } from '../types/osint';
+import { ActiveInvestigation, UserProfile } from '../types/osint';
 
 interface HeaderProps {
   investigation: ActiveInvestigation | null;
   onClear: () => void;
   onNavigate: (view: string) => void;
   operationalConnectorsCount: number;
+  currentUser?: UserProfile | null;
+  onOpenLogin?: () => void;
 }
 
 export const Header: React.FC<HeaderProps> = ({ 
   investigation, 
   onClear, 
   onNavigate,
-  operationalConnectorsCount 
+  operationalConnectorsCount,
+  currentUser,
+  onOpenLogin
 }) => {
   return (
     <header className="h-16 bg-[#0E1624] border-b border-[#26364B] px-6 flex items-center justify-between sticky top-0 z-40">
@@ -78,6 +84,31 @@ export const Header: React.FC<HeaderProps> = ({
             <span>Clear Investigation</span>
           </button>
         )}
+
+        {/* User / RBAC Profile Button */}
+        <button
+          onClick={onOpenLogin}
+          className="flex items-center space-x-2 text-xs px-2.5 py-1.5 rounded-lg bg-[#121D2D] hover:bg-[#1E293B] border border-[#26364B] transition-all cursor-pointer"
+          title={currentUser ? `Logged in as ${currentUser.username} (${currentUser.role})` : 'Sign in to access RBAC features'}
+        >
+          <div className="w-5 h-5 rounded-full bg-sky-500/20 border border-sky-500/30 flex items-center justify-center text-sky-400">
+            <User className="w-3 h-3" />
+          </div>
+          {currentUser ? (
+            <div className="flex items-center space-x-1.5">
+              <span className="font-medium text-[#F8FAFC]">{currentUser.username}</span>
+              <span className={`text-[10px] font-mono px-1.5 py-0.2 rounded border ${
+                currentUser.role === 'admin' ? 'bg-purple-500/20 text-purple-300 border-purple-500/30' :
+                currentUser.role === 'case_officer' ? 'bg-sky-500/20 text-sky-300 border-sky-500/30' :
+                'bg-emerald-500/20 text-emerald-300 border-emerald-500/30'
+              }`}>
+                {currentUser.role.toUpperCase()}
+              </span>
+            </div>
+          ) : (
+            <span className="text-[#94A3B8]">Sign In</span>
+          )}
+        </button>
 
         {/* Settings button */}
         <button

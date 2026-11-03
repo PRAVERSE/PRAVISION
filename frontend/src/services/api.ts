@@ -9,14 +9,123 @@ import {
   GraphAnalyticsResult,
   TimelineResult,
   ThreatPostureResult,
-  AiBriefingResult
+  AiBriefingResult,
+  UserProfile,
+  UserRole
 } from '../types/osint';
 
 const API_BASE = '/api';
 
+export function getAuthToken(): string | null {
+  return localStorage.getItem('pravision_token');
+}
+
+export function setAuthToken(token: string | null) {
+  if (token) {
+    localStorage.setItem('pravision_token', token);
+  } else {
+    localStorage.removeItem('pravision_token');
+  }
+}
+
+export function authFetch(url: string, init?: RequestInit): Promise<Response> {
+  const token = getAuthToken();
+  const headers = new Headers(init?.headers || {});
+  if (token && !headers.has('Authorization')) {
+    headers.set('Authorization', `Bearer ${token}`);
+  }
+  return fetch(url, { ...init, headers });
+}
+
+export const authApi = {
+  async login(username: string, password: string): Promise<{ access_token: string; refresh_token: string; token_type: string; expires_in: number; user: UserProfile }> {
+    const res = await fetch(`${API_BASE}/auth/login`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username, password })
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ detail: res.statusText }));
+      throw new Error(err.detail || 'Authentication failed');
+    }
+    const data = await res.json();
+    setAuthToken(data.access_token);
+    return data;
+  },
+
+  async logout(): Promise<void> {
+    const token = getAuthToken();
+    try {
+      if (token) {
+        await authFetch(`${API_BASE}/auth/logout`, { method: 'POST' });
+      }
+    } catch (e) {
+      // ignore
+    } finally {
+      setAuthToken(null);
+    }
+  },
+
+  async getMe(): Promise<UserProfile> {
+    const res = await authFetch(`${API_BASE}/auth/me`);
+    if (!res.ok) throw new Error(await res.text());
+    return res.json();
+  },
+
+  async listUsers(): Promise<UserProfile[]> {
+    const res = await authFetch(`${API_BASE}/auth/users`);
+    if (!res.ok) throw new Error(await res.text());
+    return res.json();
+  },
+
+  async updateUserStatus(userId: string, isActive: boolean): Promise<any> {
+    const res = await authFetch(`${API_BASE}/auth/users/${userId}/status`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ is_active: isActive })
+    });
+    if (!res.ok) throw new Error(await res.text());
+    return res.json();
+  },
+
+  async updateUserRole(userId: string, role: UserRole): Promise<any> {
+    const res = await authFetch(`${API_BASE}/auth/users/${userId}/role`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ role })
+    });
+    if (!res.ok) throw new Error(await res.text());
+    return res.json();
+  },
+
+  async shareCase(caseId: string, targetUserId: string, permission: 'read' | 'write' | 'admin' = 'read'): Promise<any> {
+    const res = await authFetch(`${API_BASE}/cases/${caseId}/share`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ target_user_id: targetUserId, permission })
+    });
+    if (!res.ok) throw new Error(await res.text());
+    return res.json();
+  },
+
+  async revokeCaseShare(caseId: string, targetUserId: string): Promise<any> {
+    const res = await authFetch(`${API_BASE}/cases/${caseId}/share/${targetUserId}`, {
+      method: 'DELETE'
+    });
+    if (!res.ok) throw new Error(await res.text());
+    return res.json();
+  },
+
+  async listCaseMembers(caseId: string): Promise<any[]> {
+    const res = await authFetch(`${API_BASE}/cases/${caseId}/members`);
+    if (!res.ok) throw new Error(await res.text());
+    return res.json();
+  }
+};
+
 export const osintApi = {
   async classify(input: string): Promise<ClassifiedInput> {
-    const res = await fetch(`${API_BASE}/classify`, {
+    const res = await authFetch(`${API_BASE}/classify`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ input })
@@ -26,7 +135,7 @@ export const osintApi = {
   },
 
   async startInvestigation(target: string, mode?: string, depth: number = 2): Promise<ActiveInvestigation> {
-    const res = await fetch(`${API_BASE}/investigations`, {
+    const res = await authFetch(`${API_BASE}/investigations`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ target, mode, depth })
@@ -36,45 +145,45 @@ export const osintApi = {
   },
 
   async getActiveInvestigation(): Promise<{ active: boolean; investigation: ActiveInvestigation | null }> {
-    const res = await fetch(`${API_BASE}/investigations/active`);
+    const res = await authFetch(`${API_BASE}/investigations/active`);
     if (!res.ok) return { active: false, investigation: null };
     return res.json();
   },
 
   async getInvestigationResults(id: string): Promise<{ total_findings: number; findings: EvidenceFinding[] }> {
-    const res = await fetch(`${API_BASE}/investigations/${id}/results`);
+    const res = await authFetch(`${API_BASE}/investigations/${id}/results`);
     if (!res.ok) throw new Error(await res.text());
     return res.json();
   },
 
   async getInvestigationGraph(id: string): Promise<IntelligenceGraph> {
-    const res = await fetch(`${API_BASE}/investigations/${id}/graph`);
+    const res = await authFetch(`${API_BASE}/investigations/${id}/graph`);
     if (!res.ok) throw new Error(await res.text());
     return res.json();
   },
 
   async clearInvestigation(id: string): Promise<void> {
-    await fetch(`${API_BASE}/investigations/${id}`, { method: 'DELETE' });
+    await authFetch(`${API_BASE}/investigations/${id}`, { method: 'DELETE' });
   },
 
   async cancelInvestigation(id: string): Promise<void> {
-    await fetch(`${API_BASE}/investigations/${id}/cancel`, { method: 'POST' });
+    await authFetch(`${API_BASE}/investigations/${id}/cancel`, { method: 'POST' });
   },
 
   async listConnectors(): Promise<ConnectorManifest[]> {
-    const res = await fetch(`${API_BASE}/connectors`);
+    const res = await authFetch(`${API_BASE}/connectors`);
     if (!res.ok) throw new Error(await res.text());
     return res.json();
   },
 
   async testConnector(name: string): Promise<{ health: string; manifest: ConnectorManifest }> {
-    const res = await fetch(`${API_BASE}/connectors/${name}/health-check`, { method: 'POST' });
+    const res = await authFetch(`${API_BASE}/connectors/${name}/health-check`, { method: 'POST' });
     if (!res.ok) throw new Error(await res.text());
     return res.json();
   },
 
   async toggleConnector(name: string, enabled: boolean): Promise<any> {
-    const res = await fetch(`${API_BASE}/connectors/${name}/toggle`, {
+    const res = await authFetch(`${API_BASE}/connectors/${name}/toggle`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ enabled })
@@ -86,7 +195,7 @@ export const osintApi = {
   async uploadMedia(file: File): Promise<any> {
     const formData = new FormData();
     formData.append('file', file);
-    const res = await fetch(`${API_BASE}/media/upload`, {
+    const res = await authFetch(`${API_BASE}/media/upload`, {
       method: 'POST',
       body: formData
     });
@@ -95,7 +204,7 @@ export const osintApi = {
   },
 
   async exportReport(format: 'html' | 'pdf' | 'json'): Promise<Blob> {
-    const res = await fetch(`${API_BASE}/reports/export`, {
+    const res = await authFetch(`${API_BASE}/reports/export`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ format })
@@ -105,13 +214,13 @@ export const osintApi = {
   },
 
   async getSettings(): Promise<any> {
-    const res = await fetch(`${API_BASE}/settings`);
+    const res = await authFetch(`${API_BASE}/settings`);
     if (!res.ok) throw new Error(await res.text());
     return res.json();
   },
 
   async updateSettings(payload: any): Promise<any> {
-    const res = await fetch(`${API_BASE}/settings`, {
+    const res = await authFetch(`${API_BASE}/settings`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload)
@@ -121,20 +230,20 @@ export const osintApi = {
   },
 
   async purgeAllData(): Promise<any> {
-    const res = await fetch(`${API_BASE}/settings/purge`, { method: 'POST' });
+    const res = await authFetch(`${API_BASE}/settings/purge`, { method: 'POST' });
     if (!res.ok) throw new Error(await res.text());
     return res.json();
   },
 
   // Case Dossiers (Stage 5)
   async listCases(): Promise<CaseDossier[]> {
-    const res = await fetch(`${API_BASE}/cases`);
+    const res = await authFetch(`${API_BASE}/cases`);
     if (!res.ok) throw new Error(await res.text());
     return res.json();
   },
 
   async createCase(payload: { title: string; description?: string; classification?: string; tags?: string[] }): Promise<CaseDossier> {
-    const res = await fetch(`${API_BASE}/cases`, {
+    const res = await authFetch(`${API_BASE}/cases`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload)
@@ -144,26 +253,26 @@ export const osintApi = {
   },
 
   async getCase(caseId: string): Promise<CaseDossier> {
-    const res = await fetch(`${API_BASE}/cases/${caseId}`);
+    const res = await authFetch(`${API_BASE}/cases/${caseId}`);
     if (!res.ok) throw new Error(await res.text());
     return res.json();
   },
 
   async deleteCase(caseId: string): Promise<any> {
-    const res = await fetch(`${API_BASE}/cases/${caseId}`, { method: 'DELETE' });
+    const res = await authFetch(`${API_BASE}/cases/${caseId}`, { method: 'DELETE' });
     if (!res.ok) throw new Error(await res.text());
     return res.json();
   },
 
   async saveActiveToCase(caseId: string): Promise<any> {
-    const res = await fetch(`${API_BASE}/cases/${caseId}/save-active`, { method: 'POST' });
+    const res = await authFetch(`${API_BASE}/cases/${caseId}/save-active`, { method: 'POST' });
     if (!res.ok) throw new Error(await res.text());
     return res.json();
   },
 
   // Storage & Vault (Stage 5)
   async getStorageStatus(): Promise<StorageStatus> {
-    const res = await fetch(`${API_BASE}/storage/status`);
+    const res = await authFetch(`${API_BASE}/storage/status`);
     if (!res.ok) throw new Error(await res.text());
     return res.json();
   },
@@ -172,7 +281,7 @@ export const osintApi = {
     const formData = new FormData();
     formData.append('file', file);
     if (investigationId) formData.append('investigation_id', investigationId);
-    const res = await fetch(`${API_BASE}/storage/evidence/upload`, {
+    const res = await authFetch(`${API_BASE}/storage/evidence/upload`, {
       method: 'POST',
       body: formData
     });
@@ -182,37 +291,37 @@ export const osintApi = {
 
   // Intelligence Engine (Stage 6)
   async getEntityResolution(): Promise<any> {
-    const res = await fetch(`${API_BASE}/intelligence/entity-resolution`);
+    const res = await authFetch(`${API_BASE}/intelligence/entity-resolution`);
     if (!res.ok) throw new Error(await res.text());
     return res.json();
   },
 
   async getGraphAnalytics(): Promise<GraphAnalyticsResult> {
-    const res = await fetch(`${API_BASE}/intelligence/graph-analytics`);
+    const res = await authFetch(`${API_BASE}/intelligence/graph-analytics`);
     if (!res.ok) throw new Error(await res.text());
     return res.json();
   },
 
   async getShortestPath(source: string, target: string): Promise<{ found: boolean; path: string[] }> {
-    const res = await fetch(`${API_BASE}/intelligence/shortest-path?source=${encodeURIComponent(source)}&target=${encodeURIComponent(target)}`);
+    const res = await authFetch(`${API_BASE}/intelligence/shortest-path?source=${encodeURIComponent(source)}&target=${encodeURIComponent(target)}`);
     if (!res.ok) throw new Error(await res.text());
     return res.json();
   },
 
   async getTimeline(): Promise<TimelineResult> {
-    const res = await fetch(`${API_BASE}/intelligence/timeline`);
+    const res = await authFetch(`${API_BASE}/intelligence/timeline`);
     if (!res.ok) throw new Error(await res.text());
     return res.json();
   },
 
   async getThreatPosture(): Promise<ThreatPostureResult> {
-    const res = await fetch(`${API_BASE}/intelligence/threat-posture`);
+    const res = await authFetch(`${API_BASE}/intelligence/threat-posture`);
     if (!res.ok) throw new Error(await res.text());
     return res.json();
   },
 
   async scanDocumentText(text: string): Promise<any> {
-    const res = await fetch(`${API_BASE}/intelligence/document/scan`, {
+    const res = await authFetch(`${API_BASE}/intelligence/document/scan`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ text })
@@ -222,13 +331,13 @@ export const osintApi = {
   },
 
   async getAiBriefing(): Promise<AiBriefingResult> {
-    const res = await fetch(`${API_BASE}/intelligence/briefing`);
+    const res = await authFetch(`${API_BASE}/intelligence/briefing`);
     if (!res.ok) throw new Error(await res.text());
     return res.json();
   },
 
   async askAiAssistant(query: string): Promise<any> {
-    const res = await fetch(`${API_BASE}/intelligence/ask`, {
+    const res = await authFetch(`${API_BASE}/intelligence/ask`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ query })

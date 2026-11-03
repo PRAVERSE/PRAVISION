@@ -28,24 +28,42 @@ export const GlobalMapView: React.FC<GlobalMapViewProps> = ({ findings }) => {
 
   const [earthquakes, setEarthquakes] = useState<any[]>([]);
   const [aircrafts, setAircrafts] = useState<any[]>([]);
+  const [flightMeta, setFlightMeta] = useState<{
+    attribution?: string;
+    is_stale?: boolean;
+    status?: string;
+    total_aircraft?: number;
+    cached?: boolean;
+  }>({});
   const [isLoading, setIsLoading] = useState(false);
 
-  // Fetch public live situational data
+  // Fetch live situational data through backend gateway & public USGS
   const fetchSituationalData = async () => {
     setIsLoading(true);
     try {
-      // 1. USGS Earthquakes
-      const eqRes = await fetch('https://earthquake.usgs.gov/earthquakes/feed/v1.0/summary/all_day.geojson');
-      if (eqRes.ok) {
-        const eqData = await eqRes.json();
-        setEarthquakes(eqData.features || []);
+      // 1. USGS Earthquakes (direct public GeoJSON)
+      try {
+        const eqRes = await fetch('https://earthquake.usgs.gov/earthquakes/feed/v1.0/summary/all_day.geojson');
+        if (eqRes.ok) {
+          const eqData = await eqRes.json();
+          setEarthquakes(eqData.features || []);
+        }
+      } catch (e) {
+        console.warn('USGS earthquake fetch error:', e);
       }
 
-      // 2. OpenSky Aircraft (sample public box)
-      const acRes = await fetch('https://opensky-network.org/api/states/all?lamin=20&lomin=-120&lamax=50&lomax=-70');
+      // 2. OpenSky Aircraft through FastAPI Backend Gateway (eliminates CORS & shields upstream rate limits)
+      const acRes = await fetch('/api/geospatial/flights?lamin=20&lomin=-120&lamax=50&lomax=-70');
       if (acRes.ok) {
         const acData = await acRes.json();
-        setAircrafts((acData.states || []).slice(0, 30));
+        setFlightMeta({
+          attribution: acData.attribution || 'OpenSky Network',
+          is_stale: acData.is_stale,
+          status: acData.status,
+          total_aircraft: acData.total_aircraft,
+          cached: acData.cached
+        });
+        setAircrafts(acData.aircraft || []);
       }
     } catch (err) {
       console.warn('Situational telemetry query warning:', err);
@@ -146,15 +164,20 @@ export const GlobalMapView: React.FC<GlobalMapViewProps> = ({ findings }) => {
       });
     }
 
-    // 3. Render OpenSky Aircraft
+    // 3. Render OpenSky Aircraft (normalized or raw state array fallback)
     if (layerAircraft) {
       aircrafts.forEach((ac) => {
-        const lat = ac[6];
-        const lon = ac[5];
-        const callsign = (ac[1] || 'N/A').trim();
-        const country = ac[2];
-        if (lat && lon) {
-          const marker = L.circleMarker([lat, lon], {
+        const isObj = typeof ac === 'object' && !Array.isArray(ac);
+        const lat = isObj ? ac.latitude : ac[6];
+        const lon = isObj ? ac.longitude : ac[5];
+        const callsign = (isObj ? (ac.callsign || 'N/A') : (ac[1] || 'N/A')).trim();
+        const country = isObj ? (ac.origin_country || 'Unknown') : (ac[2] || 'Unknown');
+        const icao = isObj ? ac.icao24 : (ac[0] || 'Unknown');
+        const alt = isObj ? (ac.baro_altitude_meters ? `${Math.round(ac.baro_altitude_meters)} m` : 'N/A') : (ac[7] ? `${Math.round(ac[7])} m` : 'N/A');
+        const vel = isObj ? (ac.velocity_mps ? `${Math.round(ac.velocity_mps * 3.6)} km/h` : 'N/A') : (ac[9] ? `${Math.round(ac[9] * 3.6)} km/h` : 'N/A');
+
+        if (lat && lon && !isNaN(Number(lat)) && !isNaN(Number(lon))) {
+          const marker = L.circleMarker([Number(lat), Number(lon)], {
             radius: 5,
             fillColor: '#F59E0B',
             color: '#D97706',
@@ -162,9 +185,11 @@ export const GlobalMapView: React.FC<GlobalMapViewProps> = ({ findings }) => {
             fillOpacity: 0.8
           }).addTo(map);
           marker.bindPopup(`
-            <div style="color: #080D16; font-family: sans-serif; font-size: 12px;">
-              <strong style="color: #D97706;">Live Aircraft ADS-B (${callsign})</strong><br>
-              <span>Origin: ${country}</span>
+            <div style="color: #080D16; font-family: sans-serif; font-size: 12px; min-width: 140px;">
+              <strong style="color: #D97706;">Live ADS-B: ${callsign}</strong><br>
+              <span>Origin: ${country}</span><br>
+              <span>ICAO: <code>${icao}</code></span><br>
+              <span>Alt: ${alt} | Spd: ${vel}</span>
             </div>
           `);
         }
@@ -198,7 +223,7 @@ export const GlobalMapView: React.FC<GlobalMapViewProps> = ({ findings }) => {
           }`}
         >
           <Plane className="w-3.5 h-3.5" />
-          <span>Aircraft (OpenSky)</span>
+          <span>Aircraft ({aircrafts.length})</span>
         </button>
 
         <button
@@ -208,7 +233,7 @@ export const GlobalMapView: React.FC<GlobalMapViewProps> = ({ findings }) => {
           }`}
         >
           <Activity className="w-3.5 h-3.5" />
-          <span>Seismic (USGS)</span>
+          <span>Seismic ({earthquakes.length})</span>
         </button>
 
         <button
@@ -219,6 +244,24 @@ export const GlobalMapView: React.FC<GlobalMapViewProps> = ({ findings }) => {
         >
           <RefreshCw className={`w-3.5 h-3.5 ${isLoading ? 'animate-spin text-sky-400' : ''}`} />
         </button>
+      </div>
+
+      {/* Attribution & Telemetry Status Floating Pill */}
+      <div className="absolute bottom-4 left-6 z-[1000] flex items-center space-x-3 bg-[#0C131F]/90 backdrop-blur-md border border-[#26364B]/80 rounded-lg px-3 py-1.5 text-[11px] text-[#94A3B8] shadow-lg">
+        <div className="flex items-center space-x-1.5">
+          <Plane className="w-3 h-3 text-amber-400" />
+          <span>Telemetry via <a href="https://opensky-network.org" target="_blank" rel="noopener noreferrer" className="text-sky-400 hover:underline">The OpenSky Network</a></span>
+        </div>
+        {flightMeta.is_stale && (
+          <span className="px-1.5 py-0.5 rounded text-[10px] font-semibold bg-amber-500/20 text-amber-300 border border-amber-500/30">
+            Cached/Stale
+          </span>
+        )}
+        {flightMeta.cached && !flightMeta.is_stale && (
+          <span className="px-1.5 py-0.5 rounded text-[10px] font-semibold bg-sky-500/20 text-sky-300 border border-sky-500/30">
+            Cached
+          </span>
+        )}
       </div>
 
       {/* Map Container */}

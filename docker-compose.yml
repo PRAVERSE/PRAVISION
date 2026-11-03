@@ -1,0 +1,44 @@
+services:
+  pravision:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: pravision:2.5-production
+    container_name: pravision_app
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8000:8000"
+    environment:
+      - DATABASE_URL=${DATABASE_URL:-}
+      - NEON_API_KEY=${NEON_API_KEY:-}
+      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID:-}
+      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY:-}
+      - S3_ENDPOINT_URL=${S3_ENDPOINT_URL:-}
+      - S3_BUCKET_NAME=${S3_BUCKET_NAME:-pravision-evidence}
+      - S3_REGION=${S3_REGION:-ap-southeast-1}
+      - JWT_SECRET=${JWT_SECRET:-}
+      - ADMIN_INITIAL_PASSWORD=${ADMIN_INITIAL_PASSWORD:-PravisionAdmin2026!}
+      - OFFICER_INITIAL_PASSWORD=${OFFICER_INITIAL_PASSWORD:-PravisionOfficer2026!}
+      - ANALYST_INITIAL_PASSWORD=${ANALYST_INITIAL_PASSWORD:-PravisionAnalyst2026!}
+      - WORKSPACE_DIR=/app/backend/data
+    volumes:
+      - pravision_data:/app/backend/data
+    deploy:
+      resources:
+        limits:
+          cpus: '2.00'
+          memory: 2048M
+        reservations:
+          cpus: '0.50'
+          memory: 512M
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://127.0.0.1:8000/api/storage/status"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+volumes:
+  pravision_data:
+    name: pravision_persistent_storage
+

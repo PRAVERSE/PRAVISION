@@ -228,4 +228,22 @@ export interface AiBriefingResult {
   recommended_next_actions: string[];
 }
 
+export type UserRole = 'admin' | 'case_officer' | 'analyst';
+
+export interface UserProfile {
+  id: string;
+  username: string;
+  email: string;
+  role: UserRole;
+  is_active: boolean;
+  created_at?: string;
+  last_login?: string;
+}
+
+export interface AuthState {
+  token: string | null;
+  user: UserProfile | null;
+  isAuthenticated: boolean;
+}
+
 

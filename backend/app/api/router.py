@@ -4,7 +4,7 @@ import uuid
 import json
 from pathlib import Path
 from typing import Dict, Any, Optional, List
-from fastapi import APIRouter, HTTPException, UploadFile, File, Form, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, HTTPException, UploadFile, File, Form, WebSocket, WebSocketDisconnect, Request
 from fastapi.responses import HTMLResponse, Response
 
 from app.engine.input_classifier import input_classifier, ClassifiedInput
@@ -21,14 +21,18 @@ from app.storage.database import check_db_health
 from app.storage.case_manager import case_manager
 from app.storage.b2_storage import b2_storage
 from app.storage.backup_system import backup_system, backup_scheduler
+from app.storage.streaming_archive import streaming_archive_service, ARCHIVE_DIR
+from app.geospatial.opensky_service import opensky_service
 from app.intelligence.entity_resolution import entity_resolution
 from app.intelligence.graph_analytics import graph_analytics
 from app.intelligence.timeline_engine import timeline_engine
 from app.intelligence.threat_intel import threat_intel_engine
 from app.intelligence.document_intel import document_intel
 from app.intelligence.ai_assistant import intelligence_assistant
+from app.api.auth_routes import auth_router
 
 router = APIRouter()
+router.include_router(auth_router)
 
 # ----------------- INPUT CLASSIFICATION -----------------
 
@@ -246,41 +250,72 @@ async def purge_all_data():
     count = privacy_controller.purge_all_ephemeral_data()
     return {"status": "purged", "items_removed": count}
 
-# ----------------- CASES & DOSSIERS (STAGE 5) -----------------
+# ----------------- CASES & DOSSIERS (STAGE 5 & 2.5 RBAC) -----------------
+
+async def get_optional_user(request: Request) -> Optional[Any]:
+    auth_header = request.headers.get("Authorization")
+    cookie_token = request.cookies.get("pravision_token")
+    if not auth_header and not cookie_token:
+        return None
+    try:
+        from app.auth.auth_service import get_current_user
+        return await get_current_user(request, None)
+    except Exception:
+        return None
 
 @router.get("/cases")
-async def list_cases(limit: int = 50, offset: int = 0):
-    return await case_manager.list_cases(limit=limit, offset=offset)
+async def list_cases(request: Request, limit: int = 50, offset: int = 0):
+    user = await get_optional_user(request)
+    return await case_manager.list_cases(
+        limit=limit,
+        offset=offset,
+        user_id=user.id if user else None,
+        role=user.role if user else None
+    )
 
 @router.post("/cases")
-async def create_case(payload: Dict[str, Any]):
+async def create_case(request: Request, payload: Dict[str, Any]):
     title = payload.get("title", "").strip()
     if not title:
         raise HTTPException(status_code=400, detail="Case title is required.")
+    user = await get_optional_user(request)
     return await case_manager.create_case(
         title=title,
         description=payload.get("description"),
-        created_by=payload.get("created_by", "Analyst"),
+        created_by=user.username if user else payload.get("created_by", "Analyst"),
+        owner_id=user.id if user else None,
         classification=payload.get("classification", "UNCLASSIFIED"),
         tags=payload.get("tags", [])
     )
 
 @router.get("/cases/{case_id}")
-async def get_case(case_id: str):
+async def get_case(request: Request, case_id: str):
+    user = await get_optional_user(request)
+    if user:
+        from app.auth.auth_service import verify_case_access
+        await verify_case_access(case_id, user, "read")
     case = await case_manager.get_case(case_id)
     if not case:
         raise HTTPException(status_code=404, detail="Case not found.")
     return case
 
 @router.delete("/cases/{case_id}")
-async def delete_case(case_id: str):
+async def delete_case(request: Request, case_id: str):
+    user = await get_optional_user(request)
+    if user:
+        from app.auth.auth_service import verify_case_access
+        await verify_case_access(case_id, user, "write")
     success = await case_manager.delete_case(case_id)
     if not success:
         raise HTTPException(status_code=404, detail="Case not found.")
     return {"status": "deleted", "case_id": case_id}
 
 @router.post("/cases/{case_id}/save-active")
-async def save_active_investigation_to_case(case_id: str):
+async def save_active_investigation_to_case(request: Request, case_id: str):
+    user = await get_optional_user(request)
+    if user:
+        from app.auth.auth_service import verify_case_access
+        await verify_case_access(case_id, user, "write")
     inv = orchestrator.get_active()
     if not inv:
         raise HTTPException(status_code=400, detail="No active investigation in memory to save.")
@@ -299,6 +334,37 @@ async def save_active_investigation_to_case(case_id: str):
         )
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
+
+@router.post("/cases/{case_id}/share")
+async def share_case(request: Request, case_id: str, payload: Dict[str, str]):
+    user = await get_optional_user(request)
+    if user:
+        from app.auth.auth_service import verify_case_access
+        await verify_case_access(case_id, user, "write")
+    target_user_id = payload.get("target_user_id") or payload.get("user_id")
+    permission = payload.get("permission", "read")
+    if not target_user_id:
+        raise HTTPException(status_code=400, detail="target_user_id is required.")
+    return await case_manager.share_case(case_id, target_user_id, permission)
+
+@router.delete("/cases/{case_id}/share/{user_id}")
+async def revoke_case_share(request: Request, case_id: str, user_id: str):
+    user = await get_optional_user(request)
+    if user:
+        from app.auth.auth_service import verify_case_access
+        await verify_case_access(case_id, user, "write")
+    success = await case_manager.revoke_case_share(case_id, user_id)
+    if not success:
+        raise HTTPException(status_code=404, detail="Membership not found.")
+    return {"status": "revoked", "case_id": case_id, "user_id": user_id}
+
+@router.get("/cases/{case_id}/members")
+async def get_case_members(request: Request, case_id: str):
+    user = await get_optional_user(request)
+    if user:
+        from app.auth.auth_service import verify_case_access
+        await verify_case_access(case_id, user, "read")
+    return await case_manager.list_case_members(case_id)
 
 # ----------------- STORAGE & VAULT (STAGE 5) -----------------
 
@@ -386,6 +452,83 @@ async def restore_backup_package(
         return res
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Restoration failed: {str(e)}")
+
+# ----------------- STREAMING LARGE EVIDENCE ARCHIVES (STAGE 5.6) -----------------
+
+@router.post("/archive/create")
+async def create_streaming_archive(payload: Dict[str, Any] = None):
+    case_id = payload.get("case_id") if payload else None
+    output_name = payload.get("output_name") if payload else None
+    try:
+        return await streaming_archive_service.create_archive(case_id=case_id, output_file_name=output_name)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Streaming archive creation failed: {str(e)}")
+
+@router.get("/archive/download/{filename}")
+async def download_streaming_archive(filename: str):
+    safe_name = Path(filename).name
+    target_file = ARCHIVE_DIR / safe_name
+    if not target_file.exists():
+        raise HTTPException(status_code=404, detail="Archive file not found.")
+    return Response(
+        content=target_file.read_bytes(),
+        media_type="application/octet-stream",
+        headers={"Content-Disposition": f"attachment; filename={safe_name}"}
+    )
+
+@router.post("/archive/restore")
+async def restore_streaming_archive(
+    file: UploadFile = File(...),
+    verify_only: bool = Form(False),
+    prefix: str = Form("")
+):
+    temp_target = ARCHIVE_DIR / f"upload_{uuid.uuid4().hex[:8]}_{Path(file.filename or 'test.pravision_archive').name}"
+    try:
+        content = await file.read()
+        temp_target.write_bytes(content)
+        res = await streaming_archive_service.restore_archive(
+            archive_path=temp_target,
+            target_case_prefix=prefix,
+            verify_only=verify_only
+        )
+        return res
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Archive restoration failed: {str(e)}")
+    finally:
+        if temp_target.exists():
+            try:
+                temp_target.unlink()
+            except Exception:
+                pass
+
+# ----------------- GEOSPATIAL FLIGHT TELEMETRY (OPENSKY GATEWAY) -----------------
+
+@router.get("/geospatial/flights")
+async def get_geospatial_flights(
+    lamin: float = 20.0,
+    lomin: float = -125.0,
+    lamax: float = 50.0,
+    lomax: float = -65.0,
+    force: bool = False
+):
+    try:
+        return await opensky_service.get_flights(
+            lamin=lamin,
+            lomin=lomin,
+            lamax=lamax,
+            lomax=lomax,
+            force_refresh=force
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+@router.get("/geospatial/flights/health")
+async def get_opensky_health():
+    return opensky_service.get_health()
+
+@router.get("/geospatial/flights/coverage")
+async def get_opensky_coverage():
+    return opensky_service.get_coverage()
 
 # ----------------- INTELLIGENCE WORKSTATION (STAGE 6) -----------------
 

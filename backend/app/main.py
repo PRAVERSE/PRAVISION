@@ -21,10 +21,12 @@ async def lifespan(app: FastAPI):
     privacy_controller.purge_all_ephemeral_data()
     from app.storage.database import init_db
     from app.storage.backup_system import backup_scheduler
+    from app.auth.auth_service import auth_service
     try:
         await init_db()
+        await auth_service.seed_default_users()
     except Exception as e:
-        logger.error(f"Failed to initialize database: {e}")
+        logger.error(f"Failed to initialize database or security accounts: {e}")
     asyncio.create_task(connector_registry.run_all_health_checks())
     asyncio.create_task(backup_scheduler.start())
     yield

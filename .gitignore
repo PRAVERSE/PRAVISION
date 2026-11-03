@@ -34,3 +34,7 @@ scratch/
 .env.local
 .neon
 node_modules/
+backend/.backup_key
+backend/.auth_secret
+backend/.initial_admin_credentials
+*.pravision_archive

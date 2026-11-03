@@ -9,7 +9,10 @@ from sqlalchemy import select, update, delete, desc
 from sqlalchemy.orm import selectinload
 
 from app.storage.database import async_session_maker
-from app.storage.models_db import CaseModel, InvestigationModel, EntityModel, RelationshipModel, EvidenceModel, AuditLogModel
+from app.storage.models_db import (
+    CaseModel, InvestigationModel, EntityModel, RelationshipModel, EvidenceModel, AuditLogModel,
+    CaseMembershipModel, UserModel
+)
 from app.storage.b2_storage import b2_storage
 from app.evidence.models import EvidenceFinding, EntityType
 
@@ -26,6 +29,7 @@ class CaseManager:
         title: str,
         description: Optional[str] = None,
         created_by: str = "Analyst",
+        owner_id: Optional[str] = None,
         classification: str = "UNCLASSIFIED",
         tags: Optional[List[str]] = None
     ) -> Dict[str, Any]:
@@ -38,6 +42,7 @@ class CaseManager:
                 title=title,
                 description=description,
                 created_by=created_by,
+                owner_id=owner_id,
                 classification=classification,
                 tags=tags or []
             )
@@ -46,6 +51,7 @@ class CaseManager:
             # Log audit
             audit = AuditLogModel(
                 user=created_by,
+                actor_id=owner_id,
                 action="create_case",
                 target_type="case",
                 target_id=case_id,
@@ -56,12 +62,97 @@ class CaseManager:
             await session.refresh(case)
             return self._case_to_dict(case)
 
-    async def list_cases(self, limit: int = 50, offset: int = 0) -> List[Dict[str, Any]]:
+    async def list_cases(
+        self,
+        limit: int = 50,
+        offset: int = 0,
+        user_id: Optional[str] = None,
+        role: Optional[str] = None
+    ) -> List[Dict[str, Any]]:
         async with async_session_maker() as session:
-            stmt = select(CaseModel).order_by(desc(CaseModel.created_at)).offset(offset).limit(limit)
+            stmt = select(CaseModel).order_by(desc(CaseModel.created_at))
+            if role and role != "admin" and user_id:
+                # Filter cases where user is owner or explicit member
+                stmt = stmt.outerjoin(CaseMembershipModel, CaseModel.id == CaseMembershipModel.case_id).where(
+                    (CaseModel.owner_id == user_id) | (CaseMembershipModel.user_id == user_id)
+                ).distinct()
+            stmt = stmt.offset(offset).limit(limit)
             result = await session.execute(stmt)
             cases = result.scalars().all()
             return [self._case_to_dict(c) for c in cases]
+
+    async def share_case(self, case_id: str, user_id: str, permission: str = "read", granted_by: Optional[str] = None) -> Dict[str, Any]:
+        """Grants or updates user access to a specific case."""
+        async with async_session_maker() as session:
+            stmt = select(CaseMembershipModel).where(
+                CaseMembershipModel.case_id == case_id,
+                CaseMembershipModel.user_id == user_id
+            )
+            membership = (await session.execute(stmt)).scalar_one_or_none()
+            if membership:
+                membership.permission = permission
+            else:
+                membership = CaseMembershipModel(
+                    case_id=case_id,
+                    user_id=user_id,
+                    permission=permission,
+                    granted_by=granted_by
+                )
+                session.add(membership)
+            
+            audit = AuditLogModel(
+                user=granted_by or "system",
+                actor_id=granted_by,
+                action="share_case",
+                target_type="case",
+                target_id=case_id,
+                details={"shared_with_user_id": user_id, "permission": permission}
+            )
+            session.add(audit)
+            await session.commit()
+            return {"status": "shared", "case_id": case_id, "user_id": user_id, "permission": permission}
+
+    async def revoke_case_share(self, case_id: str, user_id: str, revoked_by: Optional[str] = None) -> bool:
+        """Revokes a user's access to a specific case."""
+        async with async_session_maker() as session:
+            stmt = select(CaseMembershipModel).where(
+                CaseMembershipModel.case_id == case_id,
+                CaseMembershipModel.user_id == user_id
+            )
+            membership = (await session.execute(stmt)).scalar_one_or_none()
+            if not membership:
+                return False
+            await session.delete(membership)
+            audit = AuditLogModel(
+                user=revoked_by or "system",
+                actor_id=revoked_by,
+                action="revoke_case_share",
+                target_type="case",
+                target_id=case_id,
+                details={"revoked_user_id": user_id}
+            )
+            session.add(audit)
+            await session.commit()
+            return True
+
+    async def list_case_members(self, case_id: str) -> List[Dict[str, Any]]:
+        """Lists users with granted access to a case."""
+        async with async_session_maker() as session:
+            stmt = select(CaseMembershipModel).options(selectinload(CaseMembershipModel.user)).where(
+                CaseMembershipModel.case_id == case_id
+            )
+            members = (await session.execute(stmt)).scalars().all()
+            return [
+                {
+                    "membership_id": m.id,
+                    "user_id": m.user_id,
+                    "username": m.user.username if m.user else "Unknown",
+                    "role": m.user.role if m.user else "analyst",
+                    "permission": m.permission,
+                    "granted_at": m.granted_at.isoformat() if m.granted_at else None
+                }
+                for m in members
+            ]
 
     async def get_case(self, case_id: str) -> Optional[Dict[str, Any]]:
         async with async_session_maker() as session:
@@ -497,10 +588,12 @@ class CaseManager:
     def _case_to_dict(self, c: CaseModel) -> Dict[str, Any]:
         return {
             "id": c.id,
+            "case_id": c.id,
             "case_number": c.case_number,
             "title": c.title,
             "description": c.description,
             "created_by": c.created_by,
+            "owner_id": c.owner_id,
             "status": c.status,
             "classification": c.classification,
             "tags": c.tags or [],

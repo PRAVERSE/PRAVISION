@@ -24,16 +24,20 @@ import {
   ChevronRight
 } from 'lucide-react';
 
+import { UserRole } from '../types/osint';
+
 interface SidebarProps {
   currentView: string;
   onNavigate: (view: string) => void;
   hasActiveInvestigation: boolean;
+  userRole?: UserRole;
 }
 
 export const Sidebar: React.FC<SidebarProps> = ({ 
   currentView, 
   onNavigate,
-  hasActiveInvestigation 
+  hasActiveInvestigation,
+  userRole
 }) => {
   const [collapsed, setCollapsed] = useState(false);
 
@@ -111,8 +115,14 @@ export const Sidebar: React.FC<SidebarProps> = ({
         })}
       </div>
 
-      {/* Collapse toggle */}
-      <div className="p-3 border-t border-[#26364B]">
+      {/* User Role Indicator & Collapse toggle */}
+      <div className="p-3 border-t border-[#26364B] space-y-2">
+        {userRole && !collapsed && (
+          <div className="flex items-center justify-between px-2 py-1 rounded bg-[#121D2D] border border-[#26364B]/60 text-[10px] text-[#94A3B8]">
+            <span>Security Role:</span>
+            <span className="font-mono uppercase font-bold text-sky-400">{userRole}</span>
+          </div>
+        )}
         <button
           onClick={() => setCollapsed(!collapsed)}
           className="w-full flex items-center justify-center p-2 rounded-lg bg-[#121D2D] text-[#94A3B8] hover:text-[#F8FAFC] border border-[#26364B] transition-all cursor-pointer"

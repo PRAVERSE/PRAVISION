@@ -5,8 +5,9 @@ import { CommandCenterView } from './views/CommandCenterView';
 import { ViewLoadingFallback } from './components/ViewLoadingFallback';
 import { lazyWithRetry } from './utils/lazyWithRetry';
 
-import { osintApi } from './services/api';
-import { ActiveInvestigation, EvidenceFinding, IntelligenceGraph, ConnectorManifest } from './types/osint';
+import { osintApi, authApi, getAuthToken } from './services/api';
+import { ActiveInvestigation, EvidenceFinding, IntelligenceGraph, ConnectorManifest, UserProfile } from './types/osint';
+import { LoginModal } from './components/LoginModal';
 
 // Lazy-loaded secondary analytical views (Code-split chunks)
 const CasesView = lazyWithRetry(() => import('./views/CasesView'), 'CasesView');
@@ -36,6 +37,8 @@ export const App: React.FC = () => {
   const [graph, setGraph] = useState<IntelligenceGraph>({ nodes: [], edges: [] });
   const [connectors, setConnectors] = useState<ConnectorManifest[]>([]);
   const [settings, setSettings] = useState<any>(null);
+  const [currentUser, setCurrentUser] = useState<UserProfile | null>(null);
+  const [isLoginModalOpen, setIsLoginModalOpen] = useState<boolean>(false);
   const [wsStatus, setWsStatus] = useState<'connected' | 'connecting' | 'disconnected'>('disconnected');
 
   const socketRef = useRef<WebSocket | null>(null);
@@ -80,10 +83,23 @@ export const App: React.FC = () => {
     }
   };
 
+  const checkAuth = async () => {
+    const token = getAuthToken();
+    if (token) {
+      try {
+        const user = await authApi.getMe();
+        setCurrentUser(user);
+      } catch (e) {
+        setCurrentUser(null);
+      }
+    }
+  };
+
   useEffect(() => {
     refreshConnectors();
     refreshSettings();
     checkActiveInvestigation();
+    checkAuth();
   }, []);
 
   // Resilient WebSocket connection manager with exponential backoff & tab resume recovery
@@ -245,6 +261,8 @@ export const App: React.FC = () => {
         onClear={handleClearInvestigation}
         onNavigate={setCurrentView}
         operationalConnectorsCount={operationalCount}
+        currentUser={currentUser}
+        onOpenLogin={() => setIsLoginModalOpen(true)}
       />
 
       <div className="flex-1 flex overflow-hidden">
@@ -252,6 +270,7 @@ export const App: React.FC = () => {
           currentView={currentView}
           onNavigate={setCurrentView}
           hasActiveInvestigation={Boolean(activeInvestigation)}
+          userRole={currentUser?.role}
         />
 
         <main className="flex-1 overflow-y-auto bg-[#080D16]">
@@ -386,6 +405,19 @@ export const App: React.FC = () => {
           </Suspense>
         </main>
       </div>
+
+      <LoginModal
+        isOpen={isLoginModalOpen}
+        onClose={() => setIsLoginModalOpen(false)}
+        currentUser={currentUser}
+        onLoginSuccess={(user) => {
+          setCurrentUser(user);
+          refreshConnectors();
+        }}
+        onLogoutSuccess={() => {
+          setCurrentUser(null);
+        }}
+      />
     </div>
   );
 };
