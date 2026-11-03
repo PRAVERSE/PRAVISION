@@ -77,7 +77,8 @@ async def init_db():
     """Initializes schema, migrations, and tables with resilient retry."""
     from app.storage.models_db import (
         UserModel, CaseMembershipModel, RevokedTokenModel,
-        CaseModel, InvestigationModel, EntityModel, RelationshipModel, EvidenceModel, AuditLogModel
+        CaseModel, InvestigationModel, EntityModel, RelationshipModel, EvidenceModel, AuditLogModel,
+        EntityMergeLogModel
     )
     for attempt in range(1, 4):
         try:
@@ -90,18 +91,45 @@ async def init_db():
 
                 # Idempotent column migrations for existing instances
                 if IS_POSTGRES:
-                    try:
-                        await conn.execute(text("ALTER TABLE cases ADD COLUMN IF NOT EXISTS owner_id VARCHAR(36);"))
-                        await conn.execute(text("ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS actor_id VARCHAR(36);"))
-                        await conn.execute(text("ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS outcome VARCHAR(32) DEFAULT 'success';"))
-                    except Exception as e:
-                        logger.warning(f"Migration notice: {e}")
+                    migrations = [
+                        "ALTER TABLE cases ADD COLUMN IF NOT EXISTS owner_id VARCHAR(36);",
+                        "ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS actor_id VARCHAR(36);",
+                        "ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS outcome VARCHAR(32) DEFAULT 'success';",
+                        "ALTER TABLE entities ADD COLUMN IF NOT EXISTS verification_status VARCHAR(32) DEFAULT 'unverified';",
+                        "ALTER TABLE entities ADD COLUMN IF NOT EXISTS aliases JSONB DEFAULT '[]'::jsonb;",
+                        "ALTER TABLE entities ADD COLUMN IF NOT EXISTS identifiers JSONB DEFAULT '{}'::jsonb;",
+                        "ALTER TABLE entities ADD COLUMN IF NOT EXISTS sources JSONB DEFAULT '[]'::jsonb;",
+                        "ALTER TABLE entities ADD COLUMN IF NOT EXISTS merged_into_id VARCHAR(36);",
+                        "ALTER TABLE entities ADD COLUMN IF NOT EXISTS merge_history JSONB DEFAULT '[]'::jsonb;",
+                        "ALTER TABLE entities ADD COLUMN IF NOT EXISTS change_history JSONB DEFAULT '[]'::jsonb;",
+                        "ALTER TABLE relationships ADD COLUMN IF NOT EXISTS creation_method VARCHAR(64) DEFAULT 'direct_observation';",
+                        "ALTER TABLE relationships ADD COLUMN IF NOT EXISTS source_ref VARCHAR(2048);",
+                        "ALTER TABLE relationships ADD COLUMN IF NOT EXISTS observation_timestamp TIMESTAMP WITHOUT TIME ZONE DEFAULT CURRENT_TIMESTAMP;",
+                        "ALTER TABLE relationships ADD COLUMN IF NOT EXISTS verification_status VARCHAR(32) DEFAULT 'unverified';"
+                    ]
+                    for sql in migrations:
+                        try:
+                            await conn.execute(text(sql))
+                        except Exception as e:
+                            logger.debug(f"Postgres column migration note: {e}")
                 else:
-                    for query in [
+                    sqlite_migrations = [
                         "ALTER TABLE cases ADD COLUMN owner_id VARCHAR(36);",
                         "ALTER TABLE audit_logs ADD COLUMN actor_id VARCHAR(36);",
-                        "ALTER TABLE audit_logs ADD COLUMN outcome VARCHAR(32) DEFAULT 'success';"
-                    ]:
+                        "ALTER TABLE audit_logs ADD COLUMN outcome VARCHAR(32) DEFAULT 'success';",
+                        "ALTER TABLE entities ADD COLUMN verification_status VARCHAR(32) DEFAULT 'unverified';",
+                        "ALTER TABLE entities ADD COLUMN aliases JSON DEFAULT '[]';",
+                        "ALTER TABLE entities ADD COLUMN identifiers JSON DEFAULT '{}';",
+                        "ALTER TABLE entities ADD COLUMN sources JSON DEFAULT '[]';",
+                        "ALTER TABLE entities ADD COLUMN merged_into_id VARCHAR(36);",
+                        "ALTER TABLE entities ADD COLUMN merge_history JSON DEFAULT '[]';",
+                        "ALTER TABLE entities ADD COLUMN change_history JSON DEFAULT '[]';",
+                        "ALTER TABLE relationships ADD COLUMN creation_method VARCHAR(64) DEFAULT 'direct_observation';",
+                        "ALTER TABLE relationships ADD COLUMN source_ref VARCHAR(2048);",
+                        "ALTER TABLE relationships ADD COLUMN observation_timestamp DATETIME DEFAULT CURRENT_TIMESTAMP;",
+                        "ALTER TABLE relationships ADD COLUMN verification_status VARCHAR(32) DEFAULT 'unverified';"
+                    ]
+                    for query in sqlite_migrations:
                         try:
                             await conn.execute(text(query))
                         except Exception:

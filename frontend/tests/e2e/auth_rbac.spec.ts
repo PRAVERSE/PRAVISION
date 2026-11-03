@@ -4,7 +4,7 @@ test.describe('PRAVISION Phase 2.5 Multi-User & RBAC End-to-End Suite', () => {
 
   test('should display Sign In trigger and open Security & RBAC modal', async ({ page }) => {
     await page.goto('/');
-    
+
     // Header should contain Sign In button
     const signInBtn = page.getByRole('button', { name: /Sign In/i });
     await expect(signInBtn).toBeVisible({ timeout: 15000 });
@@ -58,7 +58,7 @@ test.describe('PRAVISION Phase 2.5 Multi-User & RBAC End-to-End Suite', () => {
     await expect(page.getByRole('button', { name: /analyst ANALYST/i })).toBeVisible({ timeout: 15000 });
 
     // Navigate to Case Dossiers view
-    const casesNav = page.getByRole('complementary').getByRole('button', { name: /Case Dossiers/i });
+    const casesNav = page.locator('aside').getByRole('button', { name: /Case Dossiers/i });
     await casesNav.click();
     await expect(page.getByText(/Case Dossiers/i).first()).toBeVisible();
   });

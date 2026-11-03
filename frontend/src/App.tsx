@@ -8,6 +8,7 @@ import { lazyWithRetry } from './utils/lazyWithRetry';
 import { osintApi, authApi, getAuthToken } from './services/api';
 import { ActiveInvestigation, EvidenceFinding, IntelligenceGraph, ConnectorManifest, UserProfile } from './types/osint';
 import { LoginModal } from './components/LoginModal';
+import { EntityDossierDrawer } from './components/EntityDossierDrawer';
 
 // Lazy-loaded secondary analytical views (Code-split chunks)
 const CasesView = lazyWithRetry(() => import('./views/CasesView'), 'CasesView');
@@ -39,7 +40,23 @@ export const App: React.FC = () => {
   const [settings, setSettings] = useState<any>(null);
   const [currentUser, setCurrentUser] = useState<UserProfile | null>(null);
   const [isLoginModalOpen, setIsLoginModalOpen] = useState<boolean>(false);
+  const [inspectedEntityId, setInspectedEntityId] = useState<string | null>(null);
   const [wsStatus, setWsStatus] = useState<'connected' | 'connecting' | 'disconnected'>('disconnected');
+
+  const handleSelectEntity = async (entityVal: string) => {
+    try {
+      const searchRes = await osintApi.searchIntelligence(entityVal);
+      const entMatch = (searchRes.results || []).find((r: any) => r.result_type === 'entity');
+      if (entMatch) {
+        setInspectedEntityId(entMatch.id);
+      } else {
+        const f = findings.find(x => x.entity_value.toLowerCase() === entityVal.toLowerCase());
+        if (f) setInspectedEntityId(f.id);
+      }
+    } catch (err) {
+      console.warn('Entity lookup warning:', err);
+    }
+  };
 
   const socketRef = useRef<WebSocket | null>(null);
   const reconnectAttemptsRef = useRef<number>(0);
@@ -301,6 +318,7 @@ export const App: React.FC = () => {
             {currentView === 'entity_db' && (
               <EntityDatabaseView
                 findings={findings}
+                onSelectEntity={handleSelectEntity}
               />
             )}
 
@@ -319,6 +337,7 @@ export const App: React.FC = () => {
               <UniversalSearchView
                 onStartInvestigation={handleStartInvestigation}
                 onNavigate={setCurrentView}
+                onSelectEntity={handleSelectEntity}
               />
             )}
 
@@ -335,6 +354,7 @@ export const App: React.FC = () => {
               <GothamGraphView
                 graph={graph}
                 findings={findings}
+                onSelectEntity={handleSelectEntity}
               />
             )}
 
@@ -416,6 +436,15 @@ export const App: React.FC = () => {
         }}
         onLogoutSuccess={() => {
           setCurrentUser(null);
+        }}
+      />
+
+      <EntityDossierDrawer
+        entityId={inspectedEntityId}
+        onClose={() => setInspectedEntityId(null)}
+        onFocusInGraph={() => {
+          setCurrentView('graph');
+          setInspectedEntityId(null);
         }}
       />
     </div>

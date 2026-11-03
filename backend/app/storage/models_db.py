@@ -120,6 +120,13 @@ class EntityModel(Base):
     normalized_value = Column(String(1024), nullable=False, index=True)
     confidence = Column(String(32), default="moderate")
     match_type = Column(String(32), default="possible_match")
+    verification_status = Column(String(32), default="unverified", index=True)  # unverified, analyst_verified, corroborated, disputed
+    aliases = Column(JSON, default=list)
+    identifiers = Column(JSON, default=dict)
+    sources = Column(JSON, default=list)
+    merged_into_id = Column(String(36), ForeignKey("entities.id", ondelete="SET NULL"), nullable=True, index=True)
+    merge_history = Column(JSON, default=list)
+    change_history = Column(JSON, default=list)
     first_seen = Column(DateTime, default=datetime.utcnow)
     last_seen = Column(DateTime, default=datetime.utcnow)
     properties = Column(JSON, default=dict)
@@ -127,6 +134,8 @@ class EntityModel(Base):
     # Relationships
     case = relationship("CaseModel", back_populates="entities")
     investigation = relationship("InvestigationModel", back_populates="entities")
+    merged_into = relationship("EntityModel", remote_side=[id], backref="merged_entities", foreign_keys=[merged_into_id])
+    merge_logs = relationship("EntityMergeLogModel", back_populates="canonical_entity", cascade="all, delete-orphan", passive_deletes=True)
 
 class RelationshipModel(Base):
     __tablename__ = "relationships"
@@ -142,6 +151,10 @@ class RelationshipModel(Base):
     target_id = Column(String(36), ForeignKey("entities.id", ondelete="CASCADE"), nullable=False, index=True)
     relationship_type = Column(String(64), nullable=False)
     confidence = Column(String(32), default="moderate")
+    creation_method = Column(String(64), default="direct_observation", index=True)  # direct_observation, source_reported, analyst_created, inferred_candidate
+    source_ref = Column(String(2048), nullable=True)
+    observation_timestamp = Column(DateTime, default=datetime.utcnow)
+    verification_status = Column(String(32), default="unverified", index=True)
     properties = Column(JSON, default=dict)
     created_at = Column(DateTime, default=datetime.utcnow)
 
@@ -187,4 +200,23 @@ class AuditLogModel(Base):
     ip_address = Column(String(64), default="127.0.0.1")
     details = Column(JSON, default=dict)
     timestamp = Column(DateTime, default=datetime.utcnow, index=True)
+
+class EntityMergeLogModel(Base):
+    __tablename__ = "entity_merge_logs"
+
+    id = Column(String(36), primary_key=True, default=gen_uuid)
+    canonical_entity_id = Column(String(36), ForeignKey("entities.id", ondelete="CASCADE"), nullable=False, index=True)
+    absorbed_entity_id = Column(String(36), nullable=False, index=True)
+    absorbed_entity_data = Column(JSON, nullable=False)
+    merged_by = Column(String(128), default="Analyst")
+    merge_reason = Column(Text, nullable=True)
+    match_score = Column(Float, default=1.0)
+    is_active = Column(Boolean, default=True, index=True)
+    merged_at = Column(DateTime, default=datetime.utcnow, index=True)
+    unmerged_at = Column(DateTime, nullable=True)
+    unmerged_by = Column(String(128), nullable=True)
+
+    # Relationships
+    canonical_entity = relationship("EntityModel", back_populates="merge_logs", foreign_keys=[canonical_entity_id], passive_deletes=True)
+
 

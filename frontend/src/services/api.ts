@@ -302,8 +302,68 @@ export const osintApi = {
     return res.json();
   },
 
-  async getShortestPath(source: string, target: string): Promise<{ found: boolean; path: string[] }> {
+  async getShortestPath(source: string, target: string): Promise<any> {
     const res = await authFetch(`${API_BASE}/intelligence/shortest-path?source=${encodeURIComponent(source)}&target=${encodeURIComponent(target)}`);
+    if (!res.ok) throw new Error(await res.text());
+    return res.json();
+  },
+
+  // Gotham-Grade Intelligence Workstation Extensions
+  async searchIntelligence(query: string, entityType?: string, caseId?: string, minConfidence?: string): Promise<any> {
+    const params = new URLSearchParams({ q: query });
+    if (entityType && entityType !== 'all') params.append('entity_type', entityType);
+    if (caseId) params.append('case_id', caseId);
+    if (minConfidence && minConfidence !== 'all') params.append('min_confidence', minConfidence);
+    const res = await authFetch(`${API_BASE}/intelligence/search?${params.toString()}`);
+    if (!res.ok) throw new Error(await res.text());
+    return res.json();
+  },
+
+  async getCaseMergeCandidates(caseId: string, threshold = 0.70): Promise<any[]> {
+    const res = await authFetch(`${API_BASE}/intelligence/cases/${caseId}/merge-candidates?threshold=${threshold}`);
+    if (!res.ok) throw new Error(await res.text());
+    return res.json();
+  },
+
+  async mergeEntities(canonicalId: string, absorbedIds: string[], reason?: string): Promise<any> {
+    const res = await authFetch(`${API_BASE}/intelligence/entities/merge`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        canonical_entity_id: canonicalId,
+        absorbed_entity_ids: absorbedIds,
+        reason: reason || 'Analyst verified identity merge'
+      })
+    });
+    if (!res.ok) throw new Error(await res.text());
+    return res.json();
+  },
+
+  async unmergeEntity(canonicalId: string, absorbedId: string): Promise<any> {
+    const res = await authFetch(`${API_BASE}/intelligence/entities/${encodeURIComponent(canonicalId)}/unmerge/${encodeURIComponent(absorbedId)}`, {
+      method: 'POST'
+    });
+    if (!res.ok) throw new Error(await res.text());
+    return res.json();
+  },
+
+  async expandGraphNeighborhood(seedNodeIds: string[], hops = 1, allowedRelationTypes?: string[], minConfidence?: string): Promise<any> {
+    const res = await authFetch(`${API_BASE}/intelligence/graph/expand`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        seed_node_ids: seedNodeIds,
+        hops,
+        allowed_relation_types: allowedRelationTypes,
+        min_confidence: minConfidence
+      })
+    });
+    if (!res.ok) throw new Error(await res.text());
+    return res.json();
+  },
+
+  async getEntityDossier(entityId: string): Promise<any> {
+    const res = await authFetch(`${API_BASE}/intelligence/entities/${encodeURIComponent(entityId)}/dossier`);
     if (!res.ok) throw new Error(await res.text());
     return res.json();
   },

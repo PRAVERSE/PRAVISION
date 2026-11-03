@@ -24,6 +24,8 @@ from app.storage.backup_system import backup_system, backup_scheduler
 from app.storage.streaming_archive import streaming_archive_service, ARCHIVE_DIR
 from app.geospatial.opensky_service import opensky_service
 from app.intelligence.entity_resolution import entity_resolution
+from app.intelligence.entity_resolution_v2 import entity_resolution_v2
+from app.intelligence.unified_search import unified_search
 from app.intelligence.graph_analytics import graph_analytics
 from app.intelligence.timeline_engine import timeline_engine
 from app.intelligence.threat_intel import threat_intel_engine
@@ -545,10 +547,158 @@ async def get_graph_analytics():
 @router.get("/intelligence/shortest-path")
 async def get_shortest_path(source: str, target: str):
     graph = orchestrator.get_graph().dict()
-    path = graph_analytics.shortest_path(graph.get("nodes", []), graph.get("edges", []), source, target)
-    if not path:
-        return {"found": False, "path": []}
-    return {"found": True, "path": path}
+    return graph_analytics.shortest_path(graph.get("nodes", []), graph.get("edges", []), source, target)
+
+# ----------------- GOTHAM-GRADE INTELLIGENCE EXTENSIONS -----------------
+
+@router.get("/intelligence/search")
+async def unified_intelligence_search(
+    q: str,
+    entity_type: Optional[str] = None,
+    case_id: Optional[str] = None,
+    min_confidence: Optional[str] = None,
+    limit: int = 50
+):
+    return await unified_search.search(
+        query=q,
+        entity_type=entity_type,
+        case_id=case_id,
+        min_confidence=min_confidence,
+        limit=limit
+    )
+
+@router.get("/intelligence/cases/{case_id}/merge-candidates")
+async def get_case_merge_candidates(case_id: str, threshold: float = 0.70):
+    return await entity_resolution_v2.get_case_merge_candidates(case_id=case_id, threshold=threshold)
+
+@router.post("/intelligence/entities/merge")
+async def merge_entities_endpoint(request: Request, payload: Dict[str, Any]):
+    user = await get_optional_user(request)
+    username = user.username if user else "Analyst"
+    canonical_id = payload.get("canonical_entity_id")
+    absorbed_ids = payload.get("absorbed_entity_ids", [])
+    reason = payload.get("reason", "Analyst confirmed identity resolution")
+
+    if not canonical_id or not absorbed_ids:
+        raise HTTPException(status_code=400, detail="canonical_entity_id and absorbed_entity_ids are required.")
+
+    try:
+        return await entity_resolution_v2.merge_entities(
+            canonical_entity_id=canonical_id,
+            absorbed_entity_ids=absorbed_ids,
+            merged_by=username,
+            reason=reason
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+@router.post("/intelligence/entities/{canonical_id}/unmerge/{absorbed_id}")
+async def unmerge_entity_endpoint(request: Request, canonical_id: str, absorbed_id: str):
+    user = await get_optional_user(request)
+    username = user.username if user else "Analyst"
+    try:
+        return await entity_resolution_v2.unmerge_entity(
+            canonical_entity_id=canonical_id,
+            absorbed_entity_id=absorbed_id,
+            unmerged_by=username
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+@router.post("/intelligence/graph/expand")
+async def expand_graph_neighborhood(payload: Dict[str, Any]):
+    seed_node_ids = payload.get("seed_node_ids", [])
+    hops = int(payload.get("hops", 1))
+    allowed_types = payload.get("allowed_relation_types")
+    min_confidence = payload.get("min_confidence")
+
+    graph = orchestrator.get_graph().dict()
+    return graph_analytics.expand_neighborhood(
+        nodes=graph.get("nodes", []),
+        edges=graph.get("edges", []),
+        seed_node_ids=seed_node_ids,
+        hops=hops,
+        allowed_relation_types=allowed_types,
+        min_confidence=min_confidence
+    )
+
+@router.get("/intelligence/entities/{entity_id}/dossier")
+async def get_entity_dossier(entity_id: str):
+    from sqlalchemy import select, or_
+    from sqlalchemy.orm import selectinload
+    from app.storage.database import async_session_maker
+    from app.storage.models_db import EntityModel, RelationshipModel, EvidenceModel
+
+    async with async_session_maker() as session:
+        stmt = select(EntityModel).options(
+            selectinload(EntityModel.case)
+        ).where(EntityModel.id == entity_id)
+        ent = (await session.execute(stmt)).scalar_one_or_none()
+
+        if not ent:
+            raise HTTPException(status_code=404, detail="Entity not found.")
+
+        # Load linked relationships
+        stmt_rel = select(RelationshipModel).where(
+            or_(RelationshipModel.source_id == entity_id, RelationshipModel.target_id == entity_id)
+        )
+        rels = (await session.execute(stmt_rel)).scalars().all()
+
+        # Load linked evidences
+        stmt_ev = select(EvidenceModel).where(EvidenceModel.entity_id == entity_id)
+        evs = (await session.execute(stmt_ev)).scalars().all()
+
+        return {
+            "entity": {
+                "id": ent.id,
+                "case_id": ent.case_id,
+                "case_number": ent.case.case_number if ent.case else None,
+                "entity_type": ent.entity_type,
+                "entity_value": ent.entity_value,
+                "normalized_value": ent.normalized_value,
+                "confidence": ent.confidence,
+                "match_type": ent.match_type,
+                "verification_status": ent.verification_status,
+                "aliases": ent.aliases or [],
+                "identifiers": ent.identifiers or {},
+                "sources": ent.sources or [],
+                "merged_into_id": ent.merged_into_id,
+                "merge_history": ent.merge_history or [],
+                "change_history": ent.change_history or [],
+                "properties": ent.properties or {},
+                "first_seen": ent.first_seen.isoformat() if ent.first_seen else None,
+                "last_seen": ent.last_seen.isoformat() if ent.last_seen else None
+            },
+            "relationships_count": len(rels),
+            "relationships": [
+                {
+                    "id": r.id,
+                    "source_id": r.source_id,
+                    "target_id": r.target_id,
+                    "relationship_type": r.relationship_type,
+                    "confidence": r.confidence,
+                    "creation_method": r.creation_method,
+                    "source_ref": r.source_ref,
+                    "verification_status": r.verification_status,
+                    "properties": r.properties or {}
+                }
+                for r in rels
+            ],
+            "evidences_count": len(evs),
+            "evidences": [
+                {
+                    "id": ev.id,
+                    "connector_name": ev.connector_name,
+                    "source_url": ev.source_url,
+                    "file_hash": ev.file_hash,
+                    "file_mime_type": ev.file_mime_type,
+                    "file_size": ev.file_size,
+                    "collected_at": ev.collected_at.isoformat() if ev.collected_at else None
+                }
+                for ev in evs
+            ]
+        }
+
 
 @router.get("/intelligence/timeline")
 async def get_timeline():

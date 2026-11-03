@@ -168,3 +168,4 @@ CREATE TABLE audit_logs (
 - `set_user_role`: Recorded when an admin modifies user privileges.
 - `create_streaming_archive`: Recorded on archive export.
 - `restore_streaming_archive`: Recorded on archive restoration.
+

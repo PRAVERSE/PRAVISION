@@ -161,3 +161,4 @@ graph TD
    - Active user sessions maintain cryptographic JWT tokens with random UUID `jti` identifiers. Token revocation (`/api/auth/logout`) registers the `jti` in persistent database storage, enforcing immediate token invalidation across all distributed nodes.
 4. **Ephemerality & Zero-History Mode:**
    - Unsaved investigations reside exclusively in memory. Session termination or manual invocation of "Clear Investigation" eradicates investigation nodes, edges, raw payloads, and temporary media files without disk remnants.
+

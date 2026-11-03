@@ -10,7 +10,12 @@ import {
   ShieldCheck, 
   Maximize2,
   Minimize2,
-  ChevronRight
+  ChevronRight,
+  Search,
+  ExternalLink,
+  GitBranch,
+  Sparkles,
+  Eye
 } from 'lucide-react';
 import { osintApi } from '../services/api';
 import { IntelligenceGraph, GraphNode, EvidenceFinding, GraphAnalyticsResult } from '../types/osint';
@@ -18,19 +23,32 @@ import { IntelligenceGraph, GraphNode, EvidenceFinding, GraphAnalyticsResult } f
 interface GothamGraphViewProps {
   graph: IntelligenceGraph;
   findings: EvidenceFinding[];
+  onSelectEntity?: (entityVal: string) => void;
 }
 
-export const GothamGraphView: React.FC<GothamGraphViewProps> = ({ graph, findings }) => {
+export const GothamGraphView: React.FC<GothamGraphViewProps> = ({ 
+  graph, 
+  findings,
+  onSelectEntity 
+}) => {
   const [analytics, setAnalytics] = useState<GraphAnalyticsResult | null>(null);
   const [selectedNode, setSelectedNode] = useState<GraphNode | null>(null);
+  const [selectedEdge, setSelectedEdge] = useState<any | null>(null);
   const [filterType, setFilterType] = useState<string>('all');
+  const [filterRelation, setFilterRelation] = useState<string>('all');
+  const [filterMinConfidence, setFilterMinConfidence] = useState<string>('all');
+  const [searchQuery, setSearchQuery] = useState<string>('');
   const [selectedCommunity, setSelectedCommunity] = useState<string>('all');
   const [minCentrality, setMinCentrality] = useState<number>(0);
   
+  // Neighborhood expansion state
+  const [subgraphOverride, setSubgraphOverride] = useState<any | null>(null);
+  const [isExpanding, setIsExpanding] = useState<boolean>(false);
+
   // Shortest path tool state
   const [pathSource, setPathSource] = useState<string>('');
   const [pathTarget, setPathTarget] = useState<string>('');
-  const [shortestPathResult, setShortestPathResult] = useState<string[]>([]);
+  const [shortestPathData, setShortestPathData] = useState<any | null>(null);
   const [calculatingPath, setCalculatingPath] = useState<boolean>(false);
 
   useEffect(() => {
@@ -47,16 +65,42 @@ export const GothamGraphView: React.FC<GothamGraphViewProps> = ({ graph, finding
     fetchAnalytics();
   }, [graph]);
 
+  const activeNodes = subgraphOverride ? subgraphOverride.nodes : graph.nodes;
+  const activeEdges = subgraphOverride ? subgraphOverride.edges : graph.edges;
+
+  // Multi-hop neighborhood expansion
+  const handleExpandNeighborhood = async (hops: number) => {
+    if (!selectedNode) return;
+    setIsExpanding(true);
+    try {
+      const res = await osintApi.expandGraphNeighborhood(
+        [selectedNode.id],
+        hops,
+        filterRelation !== 'all' ? [filterRelation] : undefined,
+        filterMinConfidence !== 'all' ? filterMinConfidence : undefined
+      );
+      setSubgraphOverride(res);
+    } catch (err) {
+      console.error('Neighborhood expansion error:', err);
+    } finally {
+      setIsExpanding(false);
+    }
+  };
+
+  const handleResetSubgraph = () => {
+    setSubgraphOverride(null);
+  };
+
   const handleComputeShortestPath = async () => {
     if (!pathSource || !pathTarget || pathSource === pathTarget) return;
     setCalculatingPath(true);
     try {
       const res = await osintApi.getShortestPath(pathSource, pathTarget);
       if (res.found) {
-        setShortestPathResult(res.path);
+        setShortestPathData(res);
       } else {
-        alert('No path exists between selected entities.');
-        setShortestPathResult([]);
+        alert('No link chain exists between selected entities.');
+        setShortestPathData(null);
       }
     } catch (err) {
       console.error('Path error:', err);
@@ -69,13 +113,29 @@ export const GothamGraphView: React.FC<GothamGraphViewProps> = ({ graph, finding
     window.open('/api/intelligence/export/gexf', '_blank');
   };
 
-  const filteredNodes = graph.nodes.filter(n => {
+  const confidenceRank: Record<string, number> = {
+    unverified: 1,
+    low: 2,
+    moderate: 3,
+    high: 4,
+    independently_corroborated: 5
+  };
+
+  const filteredNodes = activeNodes.filter((n: GraphNode) => {
     if (filterType !== 'all' && n.type !== filterType) return false;
+    if (searchQuery && !n.label.toLowerCase().includes(searchQuery.toLowerCase())) return false;
+    if (filterMinConfidence !== 'all') {
+      const nRank = confidenceRank[n.confidence] || 1;
+      const minRank = confidenceRank[filterMinConfidence] || 1;
+      if (nRank < minRank) return false;
+    }
     const metric = analytics?.all_metrics?.[n.id];
     if (metric && metric.degree_centrality < minCentrality) return false;
     if (selectedCommunity !== 'all' && metric && metric.community_id.toString() !== selectedCommunity) return false;
     return true;
   });
+
+  const uniqueRelationTypes = Array.from(new Set(graph.edges.map(e => e.relation || 'CONNECTED_TO')));
 
   const nodeEvidence = findings.filter(f => 
     selectedNode && (f.entity_value.toLowerCase() === selectedNode.label.toLowerCase() || f.entity_value === selectedNode.id)
@@ -97,8 +157,22 @@ export const GothamGraphView: React.FC<GothamGraphViewProps> = ({ graph, finding
               Nodes: <strong className="text-white">{filteredNodes.length}</strong> / {graph.nodes.length}
             </span>
             <span className="text-slate-400">
-              Edges: <strong className="text-white">{graph.edges.length}</strong>
+              Edges: <strong className="text-white">{activeEdges.length}</strong>
             </span>
+            {subgraphOverride && (
+              <>
+                <span className="text-slate-600">|</span>
+                <span className="px-1.5 py-0.5 bg-amber-950 text-amber-300 border border-amber-800/40 rounded font-mono text-[10px]">
+                  SUBGRAPH ({subgraphOverride.hops} HOPS)
+                </span>
+                <button
+                  onClick={handleResetSubgraph}
+                  className="px-2 py-0.5 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded text-[10px] cursor-pointer"
+                >
+                  Reset
+                </button>
+              </>
+            )}
             {analytics && (
               <>
                 <span className="text-slate-600">|</span>
@@ -134,43 +208,72 @@ export const GothamGraphView: React.FC<GothamGraphViewProps> = ({ graph, finding
             </div>
           ) : (
             <div className="space-y-6 max-w-6xl mx-auto">
-              {/* Shortest Path Banner if calculated */}
-              {shortestPathResult.length > 0 && (
-                <div className="p-3 bg-indigo-950/40 border border-indigo-800/40 rounded-lg text-xs">
-                  <div className="flex items-center space-x-2 text-indigo-300 font-semibold mb-2">
-                    <Route className="w-4 h-4" />
-                    <span>SHORTEST LINK CHAIN ({shortestPathResult.length} HOPS)</span>
+              {/* Shortest Path Detailed Banner */}
+              {shortestPathData && shortestPathData.found && (
+                <div className="p-3.5 bg-indigo-950/40 border border-indigo-800/40 rounded-lg text-xs space-y-2">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center space-x-2 text-indigo-300 font-semibold">
+                      <Route className="w-4 h-4" />
+                      <span>SHORTEST LINK CHAIN ({shortestPathData.hops} HOPS)</span>
+                    </div>
+                    <button
+                      onClick={() => setShortestPathData(null)}
+                      className="text-slate-400 hover:text-white text-[10px]"
+                    >
+                      Dismiss
+                    </button>
                   </div>
+
                   <div className="flex flex-wrap items-center gap-2">
-                    {shortestPathResult.map((nodeId, idx) => {
+                    {shortestPathData.path.map((nodeId: string, idx: number) => {
                       const nodeObj = graph.nodes.find(n => n.id === nodeId);
                       return (
                         <React.Fragment key={nodeId}>
-                          <span className="px-2.5 py-1 bg-[#101B33] border border-indigo-500/40 rounded text-sky-300 font-mono">
+                          <span 
+                            onClick={() => {
+                              if (nodeObj) setSelectedNode(nodeObj);
+                            }}
+                            className="px-2.5 py-1 bg-[#101B33] border border-indigo-500/40 rounded text-sky-300 font-mono cursor-pointer hover:border-sky-400"
+                          >
                             {nodeObj?.label || nodeId}
                           </span>
-                          {idx < shortestPathResult.length - 1 && (
+                          {idx < shortestPathData.path.length - 1 && (
                             <ChevronRight className="w-3.5 h-3.5 text-slate-500 shrink-0" />
                           )}
                         </React.Fragment>
                       );
                     })}
                   </div>
+
+                  {shortestPathData.segments && shortestPathData.segments.length > 0 && (
+                    <div className="pt-2 border-t border-indigo-900/40 grid grid-cols-1 md:grid-cols-2 gap-2 text-[10px]">
+                      {shortestPathData.segments.map((seg: any) => (
+                        <div key={seg.step} className="p-2 bg-[#0B132B]/60 rounded border border-[#1E293B]">
+                          <span className="text-slate-400 block font-mono">Step #{seg.step}: {seg.from_node.label} ➔ {seg.to_node.label}</span>
+                          <span className="text-sky-300 font-semibold">{seg.relationship}</span>
+                          <span className="text-slate-500 ml-2">({seg.confidence} via {seg.source_name || 'OSINT'})</span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
                 </div>
               )}
 
               {/* Node Visual Matrix */}
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
-                {filteredNodes.map(node => {
+                {filteredNodes.map((node: GraphNode) => {
                   const metric = analytics?.all_metrics?.[node.id];
                   const isSelected = selectedNode?.id === node.id;
-                  const isInShortestPath = shortestPathResult.includes(node.id);
+                  const isInShortestPath = shortestPathData?.path?.includes(node.id);
                   const commId = metric?.community_id ?? 0;
 
                   return (
                     <div
                       key={node.id}
-                      onClick={() => setSelectedNode(node)}
+                      onClick={() => {
+                        setSelectedNode(node);
+                        setSelectedEdge(null);
+                      }}
                       className={`p-3.5 rounded-lg border transition-all cursor-pointer select-none ${
                         isSelected 
                           ? 'bg-sky-950/60 border-sky-400 shadow-lg shadow-sky-950/50' 
@@ -224,84 +327,100 @@ export const GothamGraphView: React.FC<GothamGraphViewProps> = ({ graph, finding
         </div>
       </div>
 
-      {/* Right Drawer: Filters & Node Inspector */}
-      <div className="w-88 border-l border-[#1E293B] bg-[#0A1020] flex flex-col shrink-0 text-xs">
-        {/* Tab / Drawer Header */}
-        <div className="p-4 border-b border-[#1E293B]">
-          <h3 className="font-semibold text-white flex items-center space-x-2">
-            <Filter className="w-4 h-4 text-sky-400" />
-            <span>TOPOLOGY CONTROLS</span>
-          </h3>
+      {/* Right Analytical Controls & Inspector Sidebar */}
+      <div className="w-80 md:w-96 border-l border-[#1E293B] bg-[#0A101D] flex flex-col h-full text-xs">
+        {/* Filters and Search Panel */}
+        <div className="p-4 border-b border-[#1E293B] space-y-3 bg-[#0F172A]">
+          <div className="flex items-center justify-between">
+            <span className="font-semibold text-white flex items-center space-x-1.5">
+              <Filter className="w-3.5 h-3.5 text-sky-400" />
+              <span>GRAPH CONTROLS</span>
+            </span>
+          </div>
+
+          <div className="space-y-2">
+            <div>
+              <input
+                type="text"
+                placeholder="Search node labels..."
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                className="w-full bg-[#131F37] border border-[#1E293B] rounded px-2.5 py-1.5 text-white placeholder-slate-500 focus:outline-none focus:border-sky-500 text-xs"
+              />
+            </div>
+
+            <div className="grid grid-cols-2 gap-2">
+              <div>
+                <label className="text-[10px] text-slate-400 block mb-1">Entity Type</label>
+                <select
+                  value={filterType}
+                  onChange={(e) => setFilterType(e.target.value)}
+                  className="w-full bg-[#131F37] border border-[#1E293B] rounded px-2 py-1 text-slate-200 text-xs focus:outline-none"
+                >
+                  <option value="all">All Types</option>
+                  <option value="username">Username</option>
+                  <option value="email">Email</option>
+                  <option value="domain">Domain</option>
+                  <option value="ip_address">IP Address</option>
+                  <option value="url">URL</option>
+                  <option value="person_name">Person</option>
+                  <option value="organization">Organization</option>
+                </select>
+              </div>
+
+              <div>
+                <label className="text-[10px] text-slate-400 block mb-1">Confidence</label>
+                <select
+                  value={filterMinConfidence}
+                  onChange={(e) => setFilterMinConfidence(e.target.value)}
+                  className="w-full bg-[#131F37] border border-[#1E293B] rounded px-2 py-1 text-slate-200 text-xs focus:outline-none"
+                >
+                  <option value="all">Any Confidence</option>
+                  <option value="moderate">Moderate+</option>
+                  <option value="high">High+</option>
+                  <option value="independently_corroborated">Corroborated</option>
+                </select>
+              </div>
+            </div>
+          </div>
         </div>
 
-        <div className="p-4 space-y-4 border-b border-[#1E293B]">
-          {/* Entity Type Filter */}
-          <div>
-            <label className="block text-slate-400 text-[11px] font-medium mb-1">Entity Type</label>
+        {/* Shortest Path Tool */}
+        <div className="p-4 border-b border-[#1E293B] space-y-2 bg-[#0C1322]">
+          <span className="font-semibold text-white flex items-center space-x-1.5">
+            <Route className="w-3.5 h-3.5 text-indigo-400" />
+            <span>LINK PATH TRACER</span>
+          </span>
+          <div className="space-y-1.5">
             <select
-              value={filterType}
-              onChange={(e) => setFilterType(e.target.value)}
-              className="w-full bg-[#101B33] border border-[#1E293B] rounded p-1.5 text-white focus:outline-none focus:border-sky-500"
+              value={pathSource}
+              onChange={(e) => setPathSource(e.target.value)}
+              className="w-full bg-[#131F37] border border-[#1E293B] rounded px-2 py-1 text-slate-200 text-xs"
             >
-              <option value="all">All Types</option>
-              {Array.from(new Set(graph.nodes.map(n => n.type))).map(t => (
-                <option key={t} value={t}>{t.toUpperCase()}</option>
+              <option value="">Select Origin Entity...</option>
+              {graph.nodes.map(n => (
+                <option key={n.id} value={n.id}>{n.label} ({n.type})</option>
               ))}
             </select>
-          </div>
 
-          {/* Centrality Threshold Slider */}
-          <div>
-            <div className="flex justify-between text-[11px] mb-1">
-              <span className="text-slate-400 font-medium">Min Degree Centrality</span>
-              <span className="text-sky-400 font-mono">{minCentrality}</span>
-            </div>
-            <input
-              type="range"
-              min="0"
-              max="1"
-              step="0.05"
-              value={minCentrality}
-              onChange={(e) => setMinCentrality(parseFloat(e.target.value))}
-              className="w-full accent-sky-500"
-            />
-          </div>
+            <select
+              value={pathTarget}
+              onChange={(e) => setPathTarget(e.target.value)}
+              className="w-full bg-[#131F37] border border-[#1E293B] rounded px-2 py-1 text-slate-200 text-xs"
+            >
+              <option value="">Select Target Entity...</option>
+              {graph.nodes.map(n => (
+                <option key={n.id} value={n.id}>{n.label} ({n.type})</option>
+              ))}
+            </select>
 
-          {/* Shortest Path Tool */}
-          <div className="pt-2 border-t border-[#1E293B]">
-            <span className="block text-slate-400 text-[11px] font-medium mb-1.5 flex items-center space-x-1">
-              <Route className="w-3.5 h-3.5 text-indigo-400" />
-              <span>Trace Shortest Path Between Nodes</span>
-            </span>
-            <div className="space-y-2">
-              <select
-                value={pathSource}
-                onChange={(e) => setPathSource(e.target.value)}
-                className="w-full bg-[#101B33] border border-[#1E293B] rounded p-1.5 text-white"
-              >
-                <option value="">Select Origin Node...</option>
-                {graph.nodes.map(n => (
-                  <option key={n.id} value={n.id}>{n.label} ({n.type})</option>
-                ))}
-              </select>
-              <select
-                value={pathTarget}
-                onChange={(e) => setPathTarget(e.target.value)}
-                className="w-full bg-[#101B33] border border-[#1E293B] rounded p-1.5 text-white"
-              >
-                <option value="">Select Destination Node...</option>
-                {graph.nodes.map(n => (
-                  <option key={n.id} value={n.id}>{n.label} ({n.type})</option>
-                ))}
-              </select>
-              <button
-                onClick={handleComputeShortestPath}
-                disabled={!pathSource || !pathTarget || pathSource === pathTarget || calculatingPath}
-                className="w-full py-1.5 bg-indigo-600 hover:bg-indigo-500 disabled:bg-slate-800 disabled:text-slate-500 text-white rounded font-medium transition cursor-pointer"
-              >
-                {calculatingPath ? 'Tracing Path...' : 'Compute Shortest Path'}
-              </button>
-            </div>
+            <button
+              onClick={handleComputeShortestPath}
+              disabled={calculatingPath || !pathSource || !pathTarget}
+              className="w-full py-1.5 bg-indigo-600 hover:bg-indigo-500 disabled:bg-slate-800 disabled:text-slate-500 text-white rounded font-medium transition cursor-pointer"
+            >
+              {calculatingPath ? 'Tracing Path...' : 'Compute Shortest Path'}
+            </button>
           </div>
         </div>
 
@@ -322,6 +441,44 @@ export const GothamGraphView: React.FC<GothamGraphViewProps> = ({ graph, finding
                   <span className="text-[10px] px-1.5 py-0.2 rounded font-medium bg-emerald-950 text-emerald-400 border border-emerald-800/40">
                     {selectedNode.confidence}
                   </span>
+                </div>
+
+                {/* Actions: Multi-Hop Expansion & Dossier */}
+                <div className="mt-3 pt-2 border-t border-[#1E293B] space-y-2">
+                  <span className="text-[10px] font-mono uppercase text-slate-400 block">Expand Neighborhood:</span>
+                  <div className="grid grid-cols-3 gap-1">
+                    <button
+                      onClick={() => handleExpandNeighborhood(1)}
+                      disabled={isExpanding}
+                      className="px-2 py-1 bg-sky-950 hover:bg-sky-900 border border-sky-800/50 rounded text-sky-200 text-[10px] font-mono cursor-pointer"
+                    >
+                      1 Hop
+                    </button>
+                    <button
+                      onClick={() => handleExpandNeighborhood(2)}
+                      disabled={isExpanding}
+                      className="px-2 py-1 bg-sky-950 hover:bg-sky-900 border border-sky-800/50 rounded text-sky-200 text-[10px] font-mono cursor-pointer"
+                    >
+                      2 Hops
+                    </button>
+                    <button
+                      onClick={() => handleExpandNeighborhood(3)}
+                      disabled={isExpanding}
+                      className="px-2 py-1 bg-sky-950 hover:bg-sky-900 border border-sky-800/50 rounded text-sky-200 text-[10px] font-mono cursor-pointer"
+                    >
+                      3 Hops
+                    </button>
+                  </div>
+
+                  {onSelectEntity && (
+                    <button
+                      onClick={() => onSelectEntity(selectedNode.label)}
+                      className="w-full mt-2 flex items-center justify-center space-x-1.5 py-1.5 bg-emerald-900/50 hover:bg-emerald-800 border border-emerald-700 text-emerald-200 rounded text-xs cursor-pointer"
+                    >
+                      <Eye className="w-3.5 h-3.5" />
+                      <span>Open Full Dossier</span>
+                    </button>
+                  )}
                 </div>
               </div>
 
@@ -379,3 +536,4 @@ export const GothamGraphView: React.FC<GothamGraphViewProps> = ({ graph, finding
   );
 };
 
+export default GothamGraphView;
