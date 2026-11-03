@@ -233,3 +233,4 @@ export const EntityDossierDrawer: React.FC<EntityDossierDrawerProps> = ({
     </div>
   );
 };
+
