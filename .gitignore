@@ -31,10 +31,18 @@ scratch/
 
 # Environment & Secrets
 .env
+.env.*
 .env.local
-.neon
+.neon/
 node_modules/
-backend/.backup_key
-backend/.auth_secret
-backend/.initial_admin_credentials
+backend/.backup_key*
+backend/.auth_secret*
+backend/.initial_admin_credentials*
 *.pravision_archive
+*.pravision_bkp
+*.log
+playwright-report/
+frontend/playwright-report/
+.DS_Store
+Thumbs.db
+
