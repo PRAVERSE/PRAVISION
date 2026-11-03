@@ -17,7 +17,7 @@ import {
   Sparkles,
   Eye
 } from 'lucide-react';
-import { osintApi } from '../services/api';
+import { osintApi, API_BASE } from '../services/api';
 import { IntelligenceGraph, GraphNode, EvidenceFinding, GraphAnalyticsResult } from '../types/osint';
 
 interface GothamGraphViewProps {
@@ -110,7 +110,7 @@ export const GothamGraphView: React.FC<GothamGraphViewProps> = ({
   };
 
   const handleExportGEXF = () => {
-    window.open('/api/intelligence/export/gexf', '_blank');
+    window.open(`${API_BASE}/intelligence/export/gexf`, '_blank');
   };
 
   const confidenceRank: Record<string, number> = {

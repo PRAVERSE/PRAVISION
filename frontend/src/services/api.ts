@@ -14,7 +14,7 @@ import {
   UserRole
 } from '../types/osint';
 
-const API_BASE = '/api';
+export const API_BASE = (import.meta.env.VITE_API_BASE_URL as string) || '/api';
 
 export function getAuthToken(): string | null {
   return localStorage.getItem('pravision_token');

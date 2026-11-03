@@ -1,0 +1,14 @@
+tunnel: <YOUR_CLOUDFLARE_TUNNEL_UUID>
+credentials-file: /etc/cloudflared/<YOUR_CLOUDFLARE_TUNNEL_UUID>.json
+
+ingress:
+  # Direct route to FastAPI backend (REST & WebSockets)
+  - hostname: api.pravision.yourdomain.com
+    service: http://pravision_app:8000
+    originRequest:
+      noTLSVerify: false
+      connectTimeout: 30s
+      keepAliveTimeout: 90s
+      tcpKeepAlive: 30s
+  # Catch-all rule
+  - service: http_status:404

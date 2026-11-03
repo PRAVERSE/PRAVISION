@@ -1,61 +1,49 @@
 # PRAVISION — Universal OSINT & Intelligence Platform
 > *"See Everything. Connect Everything. Understand Everything."*
 
-**PRAVISION** is a production-quality, Windows-local Universal OSINT and Intelligence platform. It bridges multi-source intelligence gathering, automatic input classification, recursive evidence expansion, cross-platform corroboration, and relationship graph topology into a unified dark-first intelligence workstation.
+**PRAVISION** is an enterprise-grade Universal OSINT and Intelligence Investigation Platform modeled after Palantir Gotham. It combines automated entity classification, multi-source intelligence gathering, recursive discovery, cross-case entity resolution, advanced link-graph analytics, geospatial situational awareness, and granular role-based access control (RBAC) into a cohesive dark-first analytical environment.
 
 ---
 
 ## ⚡ Core Philosophy: ONE INPUT → UNIFIED INTELLIGENCE
-The user does not need to memorize dozens of disparate terminal commands or manually orchestrate complex tools:
+
+The investigator inputs any seed entity (Username, Email, Phone, Domain, IP, Media, Document, Flight, or Coordinates) and the platform handles the orchestration:
+
 ```
-USER INPUT (Username, Email, Phone, Domain, IP, Media, Document, Coords)
+SEED INPUT (Username, Email, Phone, Domain, IP, Media, Flight, Coords)
    │
    ▼
-[Universal Input Classifier] ➔ Detects Entity & Investigation Mode
+[Universal Input Classifier] ➔ Detects Entity Type & Sets Investigation Mode
    │
    ▼
-[Concurrent Connector Orchestrator] ➔ Queries Approved Public Sources
+[Concurrent Connector Orchestrator] ➔ Queries 89 Registered OSINT Sources
    │
    ▼
 [Recursive Intelligence Engine] ➔ Expands Discovered Entities with Depth Bounds
    │
    ▼
-[Evidence Corroboration & Graph Topology] ➔ Maps Relationships & Scores Confidence
+[Entity Resolution Engine v2] ➔ Normalization, Lexical/Attribute Scoring & Conflict Detection
    │
    ▼
-[Unified Intelligence Dossier] ➔ Interactive Dark UI + On-Demand Export (HTML / PDF / JSON)
+[Link Graph & Community Analytics] ➔ Network Centrality, Shortest Path & GEXF Export
+   │
+   ▼
+[Unified Intelligence Dossier] ➔ Case Management, Encrypted Streaming Archive & Reports
 ```
 
 ---
 
-## 🚀 Quickstart on Windows
+## 🏛️ Gotham-Level Analytical Architecture
 
-### 1. One-Click Launch
-Double-click `start_pravision.bat` in the project root:
-```cmd
-start_pravision.bat
-```
-This batch script will:
-- Set Python encoding to UTF-8 (`chcp 65001`, `PYTHONIOENCODING=utf-8`, `PYTHONUTF8=1`).
-- Verify dependencies and Python virtual environment (`venv`).
-- Start the FastAPI backend engine on `127.0.0.1:8000`.
-- Automatically open the dashboard in your default web browser (`http://127.0.0.1:8000`).
+PRAVISION delivers a unified intelligence environment across 19 lazy-loaded analytical views:
 
-### 2. Manual Environment Setup (Optional)
-If running on a fresh workstation:
-```powershell
-powershell -ExecutionPolicy Bypass -File .\setup_pravision.ps1
-```
-
----
-
-## 🛡️ Privacy & Non-Negotiable Zero-Persistence Mandate
-PRAVISION enforces a strict **Zero-Persistence Policy**:
-- **No Target History**: Investigation targets and findings are held exclusively in volatile RAM.
-- **No Permanent Profile Databases**: Closing or clearing an investigation erases memory state immediately.
-- **Automatic Ephemeral Purging**: Uploaded media and temporary ELA forensic difference images are wiped from the runtime directory upon clearing an investigation.
-- **Log Redaction**: Sensitive target identifiers (emails, phone numbers, API keys) are sanitized from diagnostic log streams.
-- **On-Demand Exports Only**: Intelligence dossiers (HTML, PDF, JSON) are generated only upon explicit user request.
+1. **Unified Intelligence Ontology**: Strict provenance attribution linking all entities, relationships, and evidence to specific source connectors, confidence levels, and parent investigations.
+2. **Entity Resolution Engine v2**: Multi-factor probabilistic entity matching (exact match, lexical similarity, shared attributes, graph overlap) with automated conflict detection. Supports non-destructive entity merging and unmerging with complete audit trails.
+3. **Advanced Link Graph Engine**: Powered by NetworkX with multi-hop neighborhood expansion, shortest path segment tracing, Degree/Betweenness/Closeness centrality, and Louvain community detection. Exports to standard GEXF format.
+4. **Cross-Case Unified Search**: Full-text and property-level search across all historical cases, entities, relationships, and evidence objects.
+5. **Entity Dossier Drawer**: Comprehensive slide-out dossier detailing aliases, identifiers, provenance, linked relationships, and raw evidence metadata.
+6. **Live Situational Map**: Geospatial visualization integrating OpenSky Network live ADS-B flight telemetry, USGS earthquake data, and geocoded evidence.
+7. **Streaming Encrypted Archives**: Memory-efficient AES-256-GCM chunked streaming for exporting massive multi-gigabyte case dossiers without OOM or gateway timeouts.
 
 ---
 
@@ -73,20 +61,71 @@ PRAVISION enforces a strict **Zero-Persistence Policy**:
 
 ---
 
-## 🧰 Complete 89-Tool Registry
-PRAVISION integrates a complete catalogue across 10 categories (65 base + 24 candidate extensions). See [CONNECTOR_CATALOGUE.md](file:///C:/Users/hp/OneDrive/Desktop/PRAVISION/CONNECTOR_CATALOGUE.md) for full capability manifests, official repositories, and truthful health status reporting.
+## 🔒 Security, Authentication & Multi-User RBAC
 
-### GHunt 2.3.4 (Spider Edition) Integration
-- Integrates with the existing Windows executable `C:\Users\hp\.local\bin\ghunt.exe`.
-- Utilizes existing session cookies at `~/.malfrats/ghunt/creds.m` without copying credentials into frontend code.
-- Resiliently handles Windows UTF-8 console output and People API cover-photo schema updates.
+PRAVISION enforces strict enterprise security controls:
+- **Authentication**: JWT authentication with Argon2 / PBKDF2 password hashing.
+- **Three-Tier RBAC**:
+  - `admin`: Full administrative access, user management, connector controls, case creation, and evidence manipulation.
+  - `case_officer`: Case creation, evidence uploads, dossier exports, and investigative queries.
+  - `analyst`: Read-only analytical access to cases, graphs, and searches.
+- **Audit Trails**: Complete transaction audit logging for all entity merges, case modifications, and archive exports.
 
 ---
 
-## 💻 Technical Architecture
-- **Backend**: Python 3.12, FastAPI, Pydantic v2, HTTPX, WebSockets, dnspython, Pillow, ExifRead, ReportLab, NetworkX, SQLAlchemy 2.0 Async, aiosqlite, asyncpg, boto3 (B2 S3), pytest.
-- **Frontend**: React 19, TypeScript, Vite, Tailwind CSS v4, Lucide React, Leaflet, interactive link graph topology, Gotham-inspired analytical workspaces.
-- **Storage Layer**: Dual-mode architecture — standalone local SQLite with Write-Ahead Logging (WAL) and local filesystem evidence vault out of the box, with instant zero-code upgrade to PostgreSQL and Backblaze B2 S3 via environment variables (`POSTGRES_URL`, `B2_APPLICATION_KEY_ID`, `B2_APPLICATION_KEY`, `B2_BUCKET_NAME`).
-- **Intelligence Suite**: Entity resolution & contradiction detection, NetworkX graph centrality & community detection, multi-timestamp timeline sequencing & activity burst detection, threat posture scoring, document regex entity extraction, and grounded AI analytical assistant.
-- **Network**: Binds exclusively to `127.0.0.1:8000` by default.
+## ☁️ Cloud Infrastructure & Deployment
 
+### Primary Cloud Stack
+- **Database**: [Neon Lakebase PostgreSQL](https://neon.tech/) with pooled connections via `asyncpg`.
+- **Object Storage**: Neon S3-Compatible Object Storage for evidence storage and streaming archives.
+- **Edge CDN & Protection**: Cloudflare Pages for global frontend distribution with strict edge security headers.
+- **Edge Routing**: Cloudflare Tunnel (`cloudflared`) providing zero-inbound-port access to the containerized FastAPI backend.
+
+### Dual-Layer Resilience & Disaster Recovery
+If cloud services are unreachable, PRAVISION automatically degrades gracefully:
+- **Database Fallback**: SQLite with Write-Ahead Logging (WAL) and automatic journal mode.
+- **Storage Fallback**: Local AES-encrypted Evidence Vault (`backend/evidence_vault/`).
+- **Recovery**: Automatic reconnection and state synchronization upon service restoration.
+
+See [PRAVISION_CLOUDFLARE_DEPLOYMENT_GUIDE.md](file:///C:/Users/hp/OneDrive/Desktop/PRAVISION/PRAVISION_CLOUDFLARE_DEPLOYMENT_GUIDE.md) for full deployment instructions.
+
+---
+
+## 🚀 Quickstart
+
+### 1. Local Development
+```powershell
+# Run setup script (checks Python 3.12, Node.js 20+, venv)
+powershell -ExecutionPolicy Bypass -File .\setup_pravision.ps1
+
+# Start the application
+.\start_pravision.bat
+```
+
+### 2. Production Docker Deployment
+```bash
+# Copy and configure environment variables
+cp .env.production.example .env
+
+# Build and run with Docker Compose
+docker compose -f deploy/cloudflare/docker-compose.prod.yml up -d --build
+```
+
+---
+
+## 🧪 Testing & Verification
+
+The platform includes end-to-end regression and verification test suites:
+```bash
+# Run 20-Step Gotham Workflow Acceptance Test
+python -m pytest backend/tests/verify_gotham_workflow.py -v
+
+# Run Playwright E2E Browser Suite (18 tests across 8 suites)
+cd frontend
+npx playwright test
+```
+
+---
+
+## 📜 License & Compliance
+This software is provided for authorized intelligence analysis, cybersecurity investigations, and academic research. Users must comply with all applicable local, national, and international laws and data privacy regulations.

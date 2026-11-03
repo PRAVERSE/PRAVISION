@@ -1,0 +1,64 @@
+# ==============================================================================
+# PRAVISION - Production Cloudflare Deployment Stack
+# Frontend: Cloudflare Pages (built from /frontend)
+# Backend: Containerized FastAPI behind Cloudflare Tunnel (cloudflared)
+# Database: Neon Lakebase PostgreSQL (production branch)
+# Object Storage: Neon S3-Compatible Object Storage
+# ==============================================================================
+
+services:
+  pravision_api:
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+    image: pravision:2.5-production
+    container_name: pravision_backend
+    restart: unless-stopped
+    expose:
+      - "8000"
+    environment:
+      - DATABASE_URL=${DATABASE_URL}
+      - NEON_API_KEY=${NEON_API_KEY}
+      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
+      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
+      - S3_ENDPOINT_URL=${S3_ENDPOINT_URL}
+      - S3_BUCKET_NAME=${S3_BUCKET_NAME:-pravision-evidence}
+      - S3_REGION=${S3_REGION:-ap-southeast-1}
+      - JWT_SECRET=${JWT_SECRET}
+      - ADMIN_INITIAL_PASSWORD=${ADMIN_INITIAL_PASSWORD}
+      - OFFICER_INITIAL_PASSWORD=${OFFICER_INITIAL_PASSWORD}
+      - ANALYST_INITIAL_PASSWORD=${ANALYST_INITIAL_PASSWORD}
+      - WORKSPACE_DIR=/app/backend/data
+    volumes:
+      - pravision_data:/app/backend/data
+    deploy:
+      resources:
+        limits:
+          cpus: '2.00'
+          memory: 2048M
+        reservations:
+          cpus: '0.50'
+          memory: 512M
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://127.0.0.1:8000/api/storage/status"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+  # Cloudflare Tunnel Agent - securely publishes the container to Cloudflare Edge
+  # without opening inbound ports or exposing public IP addresses.
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    container_name: pravision_cloudflared
+    restart: unless-stopped
+    environment:
+      - TUNNEL_TOKEN=${CLOUDFLARE_TUNNEL_TOKEN}
+    command: tunnel --no-autoupdate run
+    depends_on:
+      pravision_api:
+        condition: service_healthy
+
+volumes:
+  pravision_data:
+    name: pravision_production_storage

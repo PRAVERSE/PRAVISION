@@ -131,9 +131,10 @@ export const App: React.FC = () => {
     }
 
     setWsStatus('connecting');
-    const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const host = window.location.host;
-    const wsUrl = `${proto}//${host}/api/investigations/${invId}/live`;
+    const wsBase = (import.meta.env.VITE_WS_URL as string) || '';
+    const wsUrl = wsBase
+      ? `${wsBase.replace(/^http/, 'ws')}/api/investigations/${invId}/live`
+      : `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.host}/api/investigations/${invId}/live`;
 
     const ws = new WebSocket(wsUrl);
     socketRef.current = ws;

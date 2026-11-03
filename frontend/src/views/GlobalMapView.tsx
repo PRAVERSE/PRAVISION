@@ -12,6 +12,7 @@ import {
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 import { EvidenceFinding } from '../types/osint';
+import { API_BASE } from '../services/api';
 
 interface GlobalMapViewProps {
   findings: EvidenceFinding[];
@@ -53,7 +54,7 @@ export const GlobalMapView: React.FC<GlobalMapViewProps> = ({ findings }) => {
       }
 
       // 2. OpenSky Aircraft through FastAPI Backend Gateway (eliminates CORS & shields upstream rate limits)
-      const acRes = await fetch('/api/geospatial/flights?lamin=20&lomin=-120&lamax=50&lomax=-70');
+      const acRes = await fetch(`${API_BASE}/geospatial/flights?lamin=20&lomin=-120&lamax=50&lomax=-70`);
       if (acRes.ok) {
         const acData = await acRes.json();
         setFlightMeta({

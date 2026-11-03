@@ -32,7 +32,9 @@ scratch/
 # Environment & Secrets
 .env
 .env.*
+!.env*.example
 .env.local
+.neon
 .neon/
 node_modules/
 backend/.backup_key*
