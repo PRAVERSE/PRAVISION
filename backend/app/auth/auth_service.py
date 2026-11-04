@@ -167,34 +167,80 @@ def validate_and_sanitize_initial_password(raw_pwd: Optional[str], role_name: st
     return clean_pwd
 
 def get_env_auth_credentials() -> Tuple[Optional[str], Optional[str], Optional[str]]:
-    """Retrieve auth credentials dynamically from .env or environment variables."""
+    """Retrieve auth credentials dynamically from .env or environment variables.
+    
+    Priority order:
+    1. Explicit PRAVISION_* environment variables (e.g. PRAVISION_AUTH_USERNAME, PRAVISION_AUTH_PASSWORD)
+    2. Explicit PRAVISION_* keys from .env file
+    3. Project .env keys ('username', 'password', 'USER_NAME', etc.)
+    4. Generic environment variables ONLY IF not on Windows and not conflicting with system accounts.
+    """
     from dotenv import dotenv_values
     from app.config import WORKSPACE_DIR
-    env_vals = dotenv_values(WORKSPACE_DIR / ".env")
     
+    env_paths = [
+        WORKSPACE_DIR / ".env",
+        Path.cwd() / ".env",
+        Path(__file__).resolve().parent.parent.parent / ".env",
+    ]
+    env_vals: Dict[str, str] = {}
+    for p in env_paths:
+        if p.exists():
+            try:
+                loaded = dotenv_values(p)
+                if loaded:
+                    env_vals.update({k: str(v) for k, v in loaded.items() if v is not None})
+            except Exception:
+                pass
+
+    # Username lookup: Namespaced env var > Namespaced .env key > .env 'username' key (MUST PREVENT OS 'USERNAME' from overriding!)
     username = (
         os.environ.get("PRAVISION_AUTH_USERNAME") or
         env_vals.get("PRAVISION_AUTH_USERNAME") or
-        os.environ.get("username") or
-        env_vals.get("username")
+        env_vals.get("username") or
+        env_vals.get("USER_NAME") or
+        env_vals.get("USERNAME") or
+        os.environ.get("PRAVISION_USER")
     )
+    # Only fall back to os.environ.get("username") if not Windows and no .env file
+    if not username and sys.platform != "win32":
+        username = os.environ.get("username")
+
+    # Password lookup: Namespaced env var > Namespaced .env key > .env 'password' key
     password = (
         os.environ.get("PRAVISION_AUTH_PASSWORD") or
         env_vals.get("PRAVISION_AUTH_PASSWORD") or
-        os.environ.get("password") or
-        env_vals.get("password")
+        env_vals.get("password") or
+        env_vals.get("PASSWORD") or
+        os.environ.get("PRAVISION_PASSWORD") or
+        os.environ.get("password")
     )
+
+    # Session / JWT Secret lookup
     secret = (
         os.environ.get("PRAVISION_SESSION_SECRET") or
         env_vals.get("PRAVISION_SESSION_SECRET") or
         os.environ.get("PRAVISION_JWT_SECRET") or
-        env_vals.get("PRAVISION_JWT_SECRET")
+        env_vals.get("PRAVISION_JWT_SECRET") or
+        os.environ.get("JWT_SECRET") or
+        env_vals.get("JWT_SECRET")
     )
-    return (
-        username.strip() if username else None,
-        password.strip() if password else None,
-        secret.strip() if secret else None
+
+    clean_user = username.strip() if username else None
+    clean_pwd = password.strip() if password is not None else None
+    clean_sec = secret.strip() if secret else None
+
+    correlation_id = uuid.uuid4().hex[:8]
+    logger.info(
+        f"[AUTH-{correlation_id}] Loaded auth credentials configuration: "
+        f"username_configured={bool(clean_user)}, "
+        f"username_len={len(clean_user) if clean_user else 0}, "
+        f"password_configured={bool(clean_pwd)}, "
+        f"password_len={len(clean_pwd) if clean_pwd else 0}, "
+        f"secret_configured={bool(clean_sec)}"
     )
+
+    return (clean_user, clean_pwd, clean_sec)
 
 class AuthService:
     """Manages authentication, RBAC authorizations, user lifecycles, and security auditing."""
@@ -230,12 +276,24 @@ class AuthService:
 
         env_user, env_pwd, _ = get_env_auth_credentials()
         is_env_auth = False
+        correlation_id = uuid.uuid4().hex[:8]
 
         if env_user and env_pwd:
             input_user = username_or_email.strip().lower()
             target_user = env_user.strip().lower()
-            user_matches = hmac.compare_digest(input_user, target_user)
-            pwd_matches = hmac.compare_digest(password.strip(), env_pwd.strip())
+            user_matches = (
+                hmac.compare_digest(input_user, target_user) or
+                hmac.compare_digest(username_or_email.strip(), env_user.strip()) or
+                hmac.compare_digest(input_user, f"{target_user}@pravision.local")
+            )
+            pwd_matches = (
+                hmac.compare_digest(password, env_pwd) or
+                hmac.compare_digest(password.strip(), env_pwd.strip())
+            )
+            logger.info(
+                f"[AUTH-{correlation_id}] Verification check from {ip_address}: "
+                f"user_matches={user_matches}, pwd_matches={pwd_matches}"
+            )
             if user_matches and pwd_matches:
                 is_env_auth = True
 

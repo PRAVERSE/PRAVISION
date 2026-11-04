@@ -116,6 +116,7 @@ export const Header: React.FC<HeaderProps> = ({
         {/* Explicit Sign Out Button */}
         {currentUser && onLogout && (
           <button
+            id="btn-sign-out"
             onClick={onLogout}
             className="flex items-center space-x-1.5 text-xs px-2.5 py-1.5 rounded-lg bg-red-500/10 hover:bg-red-500/20 text-red-400 border border-red-500/30 transition-all cursor-pointer font-medium"
             title="Sign Out of PRAVISION"

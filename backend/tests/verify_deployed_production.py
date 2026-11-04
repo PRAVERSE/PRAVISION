@@ -149,6 +149,9 @@ async def run_public_production_checks():
     if dns_resolved:
         try:
             code, data, _ = http_json("GET", f"{PUBLIC_API_URL}/storage/status")
+            if code == 200 and data.get("status") != "healthy":
+                await asyncio.sleep(1)
+                code, data, _ = http_json("GET", f"{PUBLIC_API_URL}/storage/status")
             api_ok = (code == 200 and data.get("status") in ("healthy", "ok"))
             record_public_check(3, "Public API HTTPS Reachability & Status", api_ok, f"(HTTP {code}, Payload: {data})")
         except Exception as e:

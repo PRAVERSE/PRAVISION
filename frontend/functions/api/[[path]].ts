@@ -45,6 +45,19 @@ export const onRequest: PagesFunction = async (context) => {
   newHeaders.set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS, PATCH");
   newHeaders.set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Requested-With");
 
+  // Preserve Set-Cookie headers explicitly for authentication session cookies
+  // @ts-ignore
+  if (typeof response.headers.getSetCookie === 'function') {
+    // @ts-ignore
+    const cookies: string[] = response.headers.getSetCookie();
+    if (cookies && cookies.length > 0) {
+      newHeaders.delete("set-cookie");
+      for (const cookie of cookies) {
+        newHeaders.append("set-cookie", cookie);
+      }
+    }
+  }
+
   return new Response(response.body, {
     status: response.status,
     statusText: response.statusText,

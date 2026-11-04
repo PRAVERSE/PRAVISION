@@ -30,7 +30,7 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLoginSuccess }) => {
     setError(null);
 
     const cleanUser = username.trim();
-    const cleanPwd = password.trim();
+    const cleanPwd = password;
 
     if (!cleanUser || !cleanPwd) {
       setError('Username and password are required.');
