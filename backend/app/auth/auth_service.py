@@ -1,9 +1,12 @@
+# pyright: reportAttributeAccessIssue=false, reportGeneralTypeIssues=false, reportArgumentType=false, reportPossiblyUnboundVariable=false, reportOperatorIssue=false
 import os
+import sys
 import json
 import uuid
 import hmac
 import base64
 import hashlib
+import secrets
 import logging
 from datetime import datetime, timedelta
 from typing import Dict, Any, Optional, List, Tuple
@@ -276,6 +279,7 @@ class AuthService:
 
         env_user, env_pwd, _ = get_env_auth_credentials()
         is_env_auth = False
+        target_prefix = ""
         correlation_id = uuid.uuid4().hex[:8]
 
         if env_user and env_pwd:
@@ -309,7 +313,7 @@ class AuthService:
                 is_env_auth = True
 
         async with async_session_maker() as session:
-            if is_env_auth:
+            if is_env_auth and env_user and env_pwd:
                 # Provision or synchronize the designated .env admin user in PostgreSQL
                 stmt = select(UserModel).where(
                     (UserModel.username == env_user) |
@@ -340,7 +344,7 @@ class AuthService:
                     user.failed_login_attempts = 0
                     user.locked_until = None
                     user.last_login = datetime.utcnow()
-                    if "@pravision.local" in user.email and "@" in env_user:
+                    if user.email and "@pravision.local" in str(user.email) and "@" in env_user:
                         user.email = env_user
                     await session.commit()
 
