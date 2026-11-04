@@ -8,7 +8,8 @@ import {
   Layers, 
   FileText,
   User,
-  ShieldCheck
+  ShieldCheck,
+  LogOut
 } from 'lucide-react';
 import { ActiveInvestigation, UserProfile } from '../types/osint';
 
@@ -19,6 +20,7 @@ interface HeaderProps {
   operationalConnectorsCount: number;
   currentUser?: UserProfile | null;
   onOpenLogin?: () => void;
+  onLogout?: () => void;
 }
 
 export const Header: React.FC<HeaderProps> = ({ 
@@ -27,7 +29,8 @@ export const Header: React.FC<HeaderProps> = ({
   onNavigate,
   operationalConnectorsCount,
   currentUser,
-  onOpenLogin
+  onOpenLogin,
+  onLogout
 }) => {
   return (
     <header className="h-16 bg-[#0E1624] border-b border-[#26364B] px-6 flex items-center justify-between sticky top-0 z-40">
@@ -109,6 +112,18 @@ export const Header: React.FC<HeaderProps> = ({
             <span className="text-[#94A3B8]">Sign In</span>
           )}
         </button>
+
+        {/* Explicit Sign Out Button */}
+        {currentUser && onLogout && (
+          <button
+            onClick={onLogout}
+            className="flex items-center space-x-1.5 text-xs px-2.5 py-1.5 rounded-lg bg-red-500/10 hover:bg-red-500/20 text-red-400 border border-red-500/30 transition-all cursor-pointer font-medium"
+            title="Sign Out of PRAVISION"
+          >
+            <LogOut className="w-3.5 h-3.5" />
+            <span className="hidden sm:inline">Sign Out</span>
+          </button>
+        )}
 
         {/* Settings button */}
         <button

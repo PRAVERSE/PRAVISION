@@ -2,10 +2,11 @@ import asyncio
 import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
+from starlette.middleware.base import BaseHTTPMiddleware
 
 from app.config import settings, WORKSPACE_DIR
 from app.api.router import router as api_router
@@ -68,6 +69,73 @@ app = FastAPI(
     version=settings.version,
     lifespan=lifespan
 )
+
+class MandatoryAuthMiddleware(BaseHTTPMiddleware):
+    """
+    Guarantees that all protected backend API routes require a valid authenticated session.
+    Public access is strictly restricted to login, session check, and minimal health status.
+    """
+    PUBLIC_PREFIXES = (
+        "/api/auth/login",
+        "/api/auth/session",
+        "/api/storage/status",
+        "/temp-media",
+        "/assets",
+    )
+    PUBLIC_EXACT = (
+        "/api/auth/login",
+        "/api/auth/session",
+        "/api/storage/status",
+        "/favicon.ico",
+        "/",
+        "/index.html",
+    )
+
+    async def dispatch(self, request: Request, call_next):
+        # 1. CORS Preflight is handled by CORSMiddleware
+        if request.method == "OPTIONS":
+            return await call_next(request)
+
+        path = request.url.path
+
+        # 2. Allow non-API static files and SPA root
+        if not path.startswith("/api/"):
+            return await call_next(request)
+
+        # 3. Allow explicitly public API endpoints
+        if path in self.PUBLIC_EXACT or any(path.startswith(prefix) for prefix in self.PUBLIC_PREFIXES):
+            return await call_next(request)
+
+        # 4. Enforce authentication on all other /api/* routes
+        token = None
+        auth_head = request.headers.get("Authorization") or request.headers.get("authorization")
+        if auth_head and auth_head.startswith("Bearer "):
+            token = auth_head[7:].strip()
+        elif "pravision_session" in request.cookies:
+            token = request.cookies.get("pravision_session")
+        elif "pravision_token" in request.cookies:
+            token = request.cookies.get("pravision_token")
+
+        if not token:
+            return JSONResponse(
+                status_code=401,
+                content={"detail": "Authentication required. Please log in to access PRAVISION."},
+                headers={"WWW-Authenticate": "Bearer"}
+            )
+
+        try:
+            from app.auth.auth_service import decode_jwt_token, auth_service
+            payload = decode_jwt_token(token)
+            jti = payload.get("jti")
+            if jti and await auth_service.is_token_revoked(jti):
+                return JSONResponse(status_code=401, content={"detail": "Session has been invalidated. Please log in again."})
+        except Exception as e:
+            return JSONResponse(status_code=401, content={"detail": f"Invalid or expired session credentials: {str(e)}"})
+
+        return await call_next(request)
+
+# Enforce mandatory authentication across all API endpoints
+app.add_middleware(MandatoryAuthMiddleware)
 
 # CORS configuration (Strict allowlist: exact production origin + explicit env origins only)
 app.add_middleware(

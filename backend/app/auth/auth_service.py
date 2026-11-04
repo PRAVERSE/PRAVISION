@@ -166,11 +166,126 @@ def validate_and_sanitize_initial_password(raw_pwd: Optional[str], role_name: st
         )
     return clean_pwd
 
+def get_env_auth_credentials() -> Tuple[Optional[str], Optional[str], Optional[str]]:
+    """Retrieve auth credentials dynamically from .env or environment variables."""
+    from dotenv import dotenv_values
+    from app.config import WORKSPACE_DIR
+    env_vals = dotenv_values(WORKSPACE_DIR / ".env")
+    
+    username = (
+        os.environ.get("PRAVISION_AUTH_USERNAME") or
+        env_vals.get("PRAVISION_AUTH_USERNAME") or
+        os.environ.get("username") or
+        env_vals.get("username")
+    )
+    password = (
+        os.environ.get("PRAVISION_AUTH_PASSWORD") or
+        env_vals.get("PRAVISION_AUTH_PASSWORD") or
+        os.environ.get("password") or
+        env_vals.get("password")
+    )
+    secret = (
+        os.environ.get("PRAVISION_SESSION_SECRET") or
+        env_vals.get("PRAVISION_SESSION_SECRET") or
+        os.environ.get("PRAVISION_JWT_SECRET") or
+        env_vals.get("PRAVISION_JWT_SECRET")
+    )
+    return (
+        username.strip() if username else None,
+        password.strip() if password else None,
+        secret.strip() if secret else None
+    )
+
 class AuthService:
     """Manages authentication, RBAC authorizations, user lifecycles, and security auditing."""
 
+    def __init__(self):
+        self._ip_lockouts: Dict[str, Dict[str, Any]] = {}
+
+    def _check_ip_lockout(self, ip_address: str):
+        now = datetime.utcnow()
+        ip_data = self._ip_lockouts.get(ip_address)
+        if ip_data and ip_data.get("locked_until") and ip_data["locked_until"] > now:
+            remaining_secs = int((ip_data["locked_until"] - now).total_seconds())
+            mins = max(1, remaining_secs // 60)
+            raise HTTPException(
+                status_code=429,
+                detail=f"Too many failed login attempts. Access temporarily restricted for {mins} minute(s)."
+            )
+
+    def _record_ip_failure(self, ip_address: str):
+        now = datetime.utcnow()
+        ip_data = self._ip_lockouts.get(ip_address, {"count": 0, "locked_until": None})
+        ip_data["count"] += 1
+        if ip_data["count"] >= MAX_FAILED_ATTEMPTS:
+            ip_data["locked_until"] = now + timedelta(minutes=LOCKOUT_DURATION_MINUTES)
+            logger.warning(f"IP address {ip_address} locked out for {LOCKOUT_DURATION_MINUTES}m after {ip_data['count']} failed login attempts.")
+        self._ip_lockouts[ip_address] = ip_data
+
+    def _clear_ip_failure(self, ip_address: str):
+        self._ip_lockouts.pop(ip_address, None)
+
     async def authenticate_user(self, username_or_email: str, password: str, ip_address: str = "127.0.0.1") -> Dict[str, Any]:
+        self._check_ip_lockout(ip_address)
+
+        env_user, env_pwd, _ = get_env_auth_credentials()
+        is_env_auth = False
+
+        if env_user and env_pwd:
+            input_user = username_or_email.strip().lower()
+            target_user = env_user.strip().lower()
+            user_matches = hmac.compare_digest(input_user, target_user)
+            pwd_matches = hmac.compare_digest(password.strip(), env_pwd.strip())
+            if user_matches and pwd_matches:
+                is_env_auth = True
+
         async with async_session_maker() as session:
+            if is_env_auth:
+                # Provision or synchronize the designated .env admin user in PostgreSQL
+                stmt = select(UserModel).where(UserModel.username == env_user)
+                user = (await session.execute(stmt)).scalar_one_or_none()
+                if not user:
+                    user = UserModel(
+                        username=env_user,
+                        email=f"{env_user}@pravision.local",
+                        hashed_password=hash_password(env_pwd),
+                        role="admin",
+                        full_name="Platform Administrator",
+                        is_active=True,
+                        last_login=datetime.utcnow()
+                    )
+                    session.add(user)
+                    await session.commit()
+                    await session.refresh(user)
+                else:
+                    user.hashed_password = hash_password(env_pwd)
+                    user.role = "admin"
+                    user.is_active = True
+                    user.failed_login_attempts = 0
+                    user.locked_until = None
+                    user.last_login = datetime.utcnow()
+                    await session.commit()
+
+                self._clear_ip_failure(ip_address)
+                access_token = create_jwt_token(user.id, user.username, user.role, token_type="access")
+                refresh_token = create_jwt_token(user.id, user.username, user.role, token_type="refresh")
+                await self.record_audit("user_login", user.id, user.username, "auth", user.id, "success", {"role": user.role, "auth_source": "env"}, ip_address)
+
+                return {
+                    "access_token": access_token,
+                    "refresh_token": refresh_token,
+                    "token_type": "bearer",
+                    "expires_in": ACCESS_TOKEN_EXPIRE_MINUTES * 60,
+                    "user": {
+                        "id": user.id,
+                        "username": user.username,
+                        "email": user.email,
+                        "role": user.role,
+                        "full_name": user.full_name
+                    }
+                }
+
+            # If not .env credentials, authenticate against standard provisioned database accounts
             stmt = select(UserModel).where(
                 (UserModel.username == username_or_email.strip()) | (UserModel.email == username_or_email.strip().lower())
             )
@@ -178,8 +293,9 @@ class AuthService:
             user = res.scalar_one_or_none()
 
             if not user:
+                self._record_ip_failure(ip_address)
                 await self.record_audit("user_login", None, username_or_email, "auth", None, "failure", {"reason": "user_not_found"}, ip_address)
-                raise HTTPException(status_code=401, detail="Invalid username or password.")
+                raise HTTPException(status_code=401, detail="Invalid username or password. Access denied.")
 
             # Check account lockout
             if user.locked_until and user.locked_until > datetime.utcnow():
@@ -197,10 +313,12 @@ class AuthService:
                     user.locked_until = datetime.utcnow() + timedelta(minutes=LOCKOUT_DURATION_MINUTES)
                     logger.warning(f"User '{user.username}' locked out for {LOCKOUT_DURATION_MINUTES}m after {user.failed_login_attempts} failed attempts.")
                 await session.commit()
+                self._record_ip_failure(ip_address)
                 await self.record_audit("user_login", user.id, user.username, "auth", user.id, "failure", {"reason": "invalid_password", "failed_count": user.failed_login_attempts}, ip_address)
-                raise HTTPException(status_code=401, detail="Invalid username or password.")
+                raise HTTPException(status_code=401, detail="Invalid username or password. Access denied.")
 
-            # Successful login: reset failed attempts
+            # Successful login: reset failed attempts on user and IP
+            self._clear_ip_failure(ip_address)
             user.failed_login_attempts = 0
             user.locked_until = None
             user.last_login = datetime.utcnow()
@@ -420,6 +538,8 @@ async def get_current_user(
             token = auth_head.split(" ", 1)[1].strip()
         elif auth_head:
             token = auth_head.strip()
+    elif "pravision_session" in request.cookies:
+        token = request.cookies.get("pravision_session")
     elif "pravision_token" in request.cookies:
         token = request.cookies.get("pravision_token")
 

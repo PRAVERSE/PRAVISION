@@ -63,20 +63,6 @@ export const LoginModal: React.FC<LoginModalProps> = ({
     }
   };
 
-  const setRolePreset = (role: UserRole) => {
-    setError(null);
-    if (role === 'admin') {
-      setUsername('admin');
-      setPassword('PravisionAdmin2026!');
-    } else if (role === 'case_officer') {
-      setUsername('case_officer');
-      setPassword('PravisionOfficer2026!');
-    } else if (role === 'analyst') {
-      setUsername('analyst');
-      setPassword('PravisionAnalyst2026!');
-    }
-  };
-
   const getRoleBadgeColor = (role: UserRole) => {
     switch (role) {
       case 'admin':
@@ -206,34 +192,6 @@ export const LoginModal: React.FC<LoginModalProps> = ({
                 <KeyRound className="w-4 h-4" />
                 <span>{loading ? 'Authenticating...' : 'Sign In'}</span>
               </button>
-
-              {/* Quick Preset Selector for Fast Verification */}
-              <div className="pt-2 border-t border-[#26364B]/60">
-                <span className="text-[11px] text-[#64748B] block mb-2 text-center">Fast RBAC Role Presets</span>
-                <div className="grid grid-cols-3 gap-2">
-                  <button
-                    type="button"
-                    onClick={() => setRolePreset('admin')}
-                    className="py-1.5 px-2 rounded-lg bg-purple-500/10 hover:bg-purple-500/20 text-purple-300 border border-purple-500/30 text-[10px] font-mono font-medium transition-all cursor-pointer text-center"
-                  >
-                    Admin
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setRolePreset('case_officer')}
-                    className="py-1.5 px-2 rounded-lg bg-sky-500/10 hover:bg-sky-500/20 text-sky-300 border border-sky-500/30 text-[10px] font-mono font-medium transition-all cursor-pointer text-center"
-                  >
-                    Case Officer
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setRolePreset('analyst')}
-                    className="py-1.5 px-2 rounded-lg bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 text-[10px] font-mono font-medium transition-all cursor-pointer text-center"
-                  >
-                    Analyst
-                  </button>
-                </div>
-              </div>
             </form>
           )}
         </div>

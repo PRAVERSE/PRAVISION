@@ -1,6 +1,6 @@
 import logging
 from typing import Dict, Any, List, Optional
-from fastapi import APIRouter, Depends, HTTPException, Request, status, Body
+from fastapi import APIRouter, Depends, HTTPException, Request, Response, status, Body
 
 from app.storage.models_db import UserModel, CaseMembershipModel
 from app.auth.auth_service import (
@@ -17,21 +17,49 @@ from sqlalchemy import select, delete
 logger = logging.getLogger("pravision.api.auth")
 auth_router = APIRouter(prefix="/auth", tags=["Authentication & Access Control"])
 
+def _extract_client_ip(request: Request) -> str:
+    cf_ip = request.headers.get("CF-Connecting-IP")
+    if cf_ip:
+        return cf_ip.strip()
+    xff = request.headers.get("X-Forwarded-For")
+    if xff:
+        return xff.split(",")[0].strip()
+    return request.client.host if request.client else "127.0.0.1"
+
 @auth_router.post("/login")
-async def login(request: Request, payload: Dict[str, str] = Body(...)):
+async def login(request: Request, response: Response, payload: Dict[str, str] = Body(...)):
     username = payload.get("username", "").strip()
     password = payload.get("password", "").strip()
     if not username or not password:
         raise HTTPException(status_code=400, detail="Username and password are required.")
     
-    client_ip = request.client.host if request.client else "127.0.0.1"
-    return await auth_service.authenticate_user(username, password, ip_address=client_ip)
+    client_ip = _extract_client_ip(request)
+    result = await auth_service.authenticate_user(username, password, ip_address=client_ip)
+    
+    # Set secure, HTTP-only session cookie
+    response.set_cookie(
+        key="pravision_session",
+        value=result["access_token"],
+        httponly=True,
+        secure=True,
+        samesite="lax",
+        max_age=8 * 3600,
+        path="/"
+    )
+    return result
 
 @auth_router.post("/logout")
-async def logout(request: Request, current_user: UserModel = Depends(get_current_user)):
+async def logout(request: Request, response: Response, current_user: UserModel = Depends(get_current_user)):
+    token = None
     auth_header = request.headers.get("Authorization", "")
     if auth_header.startswith("Bearer "):
-        token = auth_header[7:]
+        token = auth_header[7:].strip()
+    elif "pravision_session" in request.cookies:
+        token = request.cookies.get("pravision_session")
+    elif "pravision_token" in request.cookies:
+        token = request.cookies.get("pravision_token")
+
+    if token:
         try:
             payload = decode_jwt_token(token)
             jti = payload.get("jti")
@@ -40,9 +68,32 @@ async def logout(request: Request, current_user: UserModel = Depends(get_current
                 await auth_service.revoke_token(jti, exp)
         except Exception:
             pass
-    client_ip = request.client.host if request.client else "127.0.0.1"
+
+    # Clear session cookies
+    response.delete_cookie(key="pravision_session", path="/", httponly=True, secure=True, samesite="lax")
+    response.delete_cookie(key="pravision_token", path="/", httponly=True, secure=True, samesite="lax")
+
+    client_ip = _extract_client_ip(request)
     await auth_service.record_audit("user_logout", current_user.id, current_user.username, "auth", current_user.id, "success", {}, client_ip)
     return {"status": "logged_out", "message": "Session invalidated successfully."}
+
+@auth_router.get("/session")
+async def check_session(request: Request):
+    """Liveness check for active user session."""
+    try:
+        user = await get_current_user(request, None)
+        return {
+            "authenticated": True,
+            "user": {
+                "id": user.id,
+                "username": user.username,
+                "email": user.email,
+                "role": user.role,
+                "full_name": user.full_name
+            }
+        }
+    except Exception:
+        return {"authenticated": False, "user": None}
 
 @auth_router.get("/me")
 async def get_current_user_profile(current_user: UserModel = Depends(get_current_user)):

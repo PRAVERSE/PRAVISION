@@ -16,6 +16,12 @@ import {
 
 export const API_BASE = (import.meta.env.VITE_API_BASE_URL as string) || '/api';
 
+let onUnauthorizedCallback: (() => void) | null = null;
+
+export function setOnUnauthorizedCallback(cb: (() => void) | null) {
+  onUnauthorizedCallback = cb;
+}
+
 export function getAuthToken(): string | null {
   return localStorage.getItem('pravision_token');
 }
@@ -28,13 +34,19 @@ export function setAuthToken(token: string | null) {
   }
 }
 
-export function authFetch(url: string, init?: RequestInit): Promise<Response> {
+export async function authFetch(url: string, init?: RequestInit): Promise<Response> {
   const token = getAuthToken();
   const headers = new Headers(init?.headers || {});
   if (token && !headers.has('Authorization')) {
     headers.set('Authorization', `Bearer ${token}`);
   }
-  return fetch(url, { ...init, headers });
+  const res = await fetch(url, { ...init, headers, credentials: 'include' });
+  if (res.status === 401 && !url.includes('/auth/login') && !url.includes('/auth/session')) {
+    if (onUnauthorizedCallback) {
+      onUnauthorizedCallback();
+    }
+  }
+  return res;
 }
 
 export const authApi = {
@@ -42,11 +54,12 @@ export const authApi = {
     const res = await fetch(`${API_BASE}/auth/login`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ username, password })
+      body: JSON.stringify({ username, password }),
+      credentials: 'include'
     });
     if (!res.ok) {
       const err = await res.json().catch(() => ({ detail: res.statusText }));
-      throw new Error(err.detail || 'Authentication failed');
+      throw new Error(err.detail || 'Authentication failed. Please verify credentials.');
     }
     const data = await res.json();
     setAuthToken(data.access_token);
@@ -54,16 +67,38 @@ export const authApi = {
   },
 
   async logout(): Promise<void> {
-    const token = getAuthToken();
     try {
-      if (token) {
-        await authFetch(`${API_BASE}/auth/logout`, { method: 'POST' });
-      }
+      const token = getAuthToken();
+      await fetch(`${API_BASE}/auth/logout`, {
+        method: 'POST',
+        headers: token ? { 'Authorization': `Bearer ${token}` } : {},
+        credentials: 'include'
+      });
     } catch (e) {
       // ignore
     } finally {
       setAuthToken(null);
     }
+  },
+
+  async getSession(): Promise<{ authenticated: boolean; user: UserProfile | null }> {
+    try {
+      const token = getAuthToken();
+      const headers = new Headers();
+      if (token) {
+        headers.set('Authorization', `Bearer ${token}`);
+      }
+      const res = await fetch(`${API_BASE}/auth/session`, {
+        headers,
+        credentials: 'include'
+      });
+      if (res.ok) {
+        return await res.json();
+      }
+    } catch (e) {
+      // ignore
+    }
+    return { authenticated: false, user: null };
   },
 
   async getMe(): Promise<UserProfile> {

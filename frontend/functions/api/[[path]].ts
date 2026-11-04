@@ -1,9 +1,14 @@
 // Cloudflare Pages Function: Reverse Proxy for PRAVISION API
 export const onRequest: PagesFunction = async (context) => {
   const url = new URL(context.request.url);
-  const targetBackend = (context.env.PRAVISION_BACKEND_URL as string) || "https://api-pravision.praflix.us.ci";
+  const targetBackend = (context.env.PRAVISION_BACKEND_URL as string) || "https://aquatic-ada-burn-copy.trycloudflare.com";
   const backendUrl = new URL(targetBackend);
   const forwardUrl = new URL(url.pathname + url.search, targetBackend);
+
+  // Handle WebSocket upgrade
+  if (context.request.headers.get("Upgrade")?.toLowerCase() === "websocket") {
+    return fetch(forwardUrl.toString(), context.request);
+  }
 
   // Copy incoming headers
   const headers = new Headers(context.request.headers);

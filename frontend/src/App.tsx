@@ -4,11 +4,13 @@ import { Sidebar } from './components/Sidebar';
 import { CommandCenterView } from './views/CommandCenterView';
 import { ViewLoadingFallback } from './components/ViewLoadingFallback';
 import { lazyWithRetry } from './utils/lazyWithRetry';
+import { LoginScreen } from './components/LoginScreen';
 
-import { osintApi, authApi, getAuthToken, API_BASE } from './services/api';
+import { osintApi, authApi, getAuthToken, setOnUnauthorizedCallback, API_BASE } from './services/api';
 import { ActiveInvestigation, EvidenceFinding, IntelligenceGraph, ConnectorManifest, UserProfile } from './types/osint';
 import { LoginModal } from './components/LoginModal';
 import { EntityDossierDrawer } from './components/EntityDossierDrawer';
+import { Layers } from 'lucide-react';
 
 // Lazy-loaded secondary analytical views (Code-split chunks)
 const CasesView = lazyWithRetry(() => import('./views/CasesView'), 'CasesView');
@@ -39,6 +41,7 @@ export const App: React.FC = () => {
   const [connectors, setConnectors] = useState<ConnectorManifest[]>([]);
   const [settings, setSettings] = useState<any>(null);
   const [currentUser, setCurrentUser] = useState<UserProfile | null>(null);
+  const [isAuthChecking, setIsAuthChecking] = useState<boolean>(true);
   const [isLoginModalOpen, setIsLoginModalOpen] = useState<boolean>(false);
   const [inspectedEntityId, setInspectedEntityId] = useState<string | null>(null);
   const [wsStatus, setWsStatus] = useState<'connected' | 'connecting' | 'disconnected'>('disconnected');
@@ -100,23 +103,75 @@ export const App: React.FC = () => {
     }
   };
 
-  const checkAuth = async () => {
-    const token = getAuthToken();
-    if (token) {
+  const handleLoginSuccess = async (user: UserProfile) => {
+    setCurrentUser(user);
+    await Promise.allSettled([
+      refreshConnectors(),
+      refreshSettings(),
+      checkActiveInvestigation()
+    ]);
+  };
+
+  const handleLogout = async () => {
+    try {
+      await authApi.logout();
+    } catch {
+      // ignore
+    }
+    setCurrentUser(null);
+    setActiveInvestigation(null);
+    setFindings([]);
+    setGraph({ nodes: [], edges: [] });
+    if (socketRef.current) {
       try {
-        const user = await authApi.getMe();
-        setCurrentUser(user);
-      } catch (e) {
-        setCurrentUser(null);
-      }
+        socketRef.current.close(1000, "User logged out");
+      } catch {}
+      socketRef.current = null;
     }
   };
 
   useEffect(() => {
-    refreshConnectors();
-    refreshSettings();
-    checkActiveInvestigation();
-    checkAuth();
+    setOnUnauthorizedCallback(() => {
+      setCurrentUser(null);
+    });
+
+    const initAuthAndData = async () => {
+      setIsAuthChecking(true);
+      try {
+        const session = await authApi.getSession();
+        if (session.authenticated && session.user) {
+          setCurrentUser(session.user);
+          await Promise.allSettled([
+            refreshConnectors(),
+            refreshSettings(),
+            checkActiveInvestigation()
+          ]);
+        } else {
+          const token = getAuthToken();
+          if (token) {
+            try {
+              const u = await authApi.getMe();
+              setCurrentUser(u);
+              await Promise.allSettled([
+                refreshConnectors(),
+                refreshSettings(),
+                checkActiveInvestigation()
+              ]);
+            } catch {
+              setCurrentUser(null);
+            }
+          } else {
+            setCurrentUser(null);
+          }
+        }
+      } catch {
+        setCurrentUser(null);
+      } finally {
+        setIsAuthChecking(false);
+      }
+    };
+
+    initAuthAndData();
   }, []);
 
   // Resilient WebSocket connection manager with exponential backoff & tab resume recovery
@@ -215,14 +270,14 @@ export const App: React.FC = () => {
         method: 'POST',
         headers: { 'Authorization': `Bearer ${token}` }
       })
-      .then(res => res.ok ? res.json() : null)
-      .then(data => {
-        const param = data?.ticket ? `ticket=${encodeURIComponent(data.ticket)}` : `token=${encodeURIComponent(token)}`;
-        initWebSocket(`${wsUrl}?${param}`);
-      })
-      .catch(() => {
-        initWebSocket(`${wsUrl}?token=${encodeURIComponent(token)}`);
-      });
+        .then(res => res.ok ? res.json() : null)
+        .then(data => {
+          const param = data?.ticket ? `ticket=${encodeURIComponent(data.ticket)}` : `token=${encodeURIComponent(token)}`;
+          initWebSocket(`${wsUrl}?${param}`);
+        })
+        .catch(() => {
+          initWebSocket(`${wsUrl}?token=${encodeURIComponent(token)}`);
+        });
     } else {
       initWebSocket(wsUrl);
     }
@@ -300,6 +355,24 @@ export const App: React.FC = () => {
 
   const operationalCount = connectors.filter(c => c.health === 'operational').length;
 
+  if (isAuthChecking) {
+    return (
+      <div className="min-h-screen w-screen bg-[#070B12] text-[#F8FAFC] flex flex-col items-center justify-center space-y-4 select-none">
+        <div className="w-14 h-14 rounded-2xl bg-gradient-to-tr from-[#38BDF8] via-[#0284C7] to-[#818CF8] flex items-center justify-center shadow-lg shadow-sky-500/25 animate-pulse border border-sky-400/30">
+          <Layers className="w-7 h-7 text-[#070B12]" />
+        </div>
+        <div className="flex items-center space-x-2 text-xs font-mono text-[#94A3B8]">
+          <div className="w-3.5 h-3.5 border-2 border-sky-400 border-t-transparent rounded-full animate-spin" />
+          <span className="tracking-wider">VERIFYING SECURITY ENVIRONMENT...</span>
+        </div>
+      </div>
+    );
+  }
+
+  if (!currentUser) {
+    return <LoginScreen onLoginSuccess={handleLoginSuccess} />;
+  }
+
   return (
     <div className="min-h-screen bg-[#080D16] text-[#F8FAFC] flex flex-col font-sans">
       <Header
@@ -309,6 +382,7 @@ export const App: React.FC = () => {
         operationalConnectorsCount={operationalCount}
         currentUser={currentUser}
         onOpenLogin={() => setIsLoginModalOpen(true)}
+        onLogout={handleLogout}
       />
 
       <div className="flex-1 flex overflow-hidden">
