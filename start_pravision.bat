@@ -39,27 +39,28 @@ if not exist "frontend\dist\index.html" (
     cd /d "%ROOT_DIR%"
 )
 
-:: 5. Start Backend Server
-echo [*] Starting PRAVISION Local Intelligence Engine on 127.0.0.1:8000...
-start "PRAVISION Backend Engine" /min "%ROOT_DIR%venv\Scripts\python.exe" -m uvicorn app.main:app --app-dir "%ROOT_DIR%backend" --host 127.0.0.1 --port 8000
+:: 5. Start Supervised Production Watchdog & Engine
+echo [*] Starting PRAVISION Supervised Production Engine & Tunnel Watchdog...
+start "PRAVISION Production Supervisor" /min "%ROOT_DIR%venv\Scripts\python.exe" "%ROOT_DIR%scripts\health_watchdog.py"
 
 :: 6. Launch Web UI Dashboard
 echo [*] Launching PRAVISION Dashboard in your default browser...
-timeout /t 2 /nobreak >nul
-start http://127.0.0.1:8000
+timeout /t 3 /nobreak >nul
+start https://pravision.pages.dev
 
 echo.
 echo ===============================================================================
-echo [SUCCESS] PRAVISION is running locally at http://127.0.0.1:8000
-echo   - Backend API: http://127.0.0.1:8000/api
-echo   - GHunt 2.3.4 Integration: Active
-echo   - Zero-Persistence Memory Mode: Active
+echo [SUCCESS] PRAVISION Production Supervisor is running.
+echo   - Local Engine: http://127.0.0.1:8000
+echo   - Official Domain: https://pravision.pages.dev
+echo   - Health Watchdog: Active (automatic restart on failure)
 echo.
-echo Press any key to stop all local PRAVISION processes...
+echo Press any key to stop all PRAVISION supervised processes...
 echo ===============================================================================
 pause >nul
 
 :: Graceful Shutdown
-taskkill /f /im python.exe /fi "WINDOWTITLE eq PRAVISION Backend Engine*" >nul 2>&1
+taskkill /f /im python.exe /fi "WINDOWTITLE eq PRAVISION Production Supervisor*" >nul 2>&1
+taskkill /f /im cloudflared.exe >nul 2>&1
 echo [INFO] PRAVISION stopped. Ephemeral buffers purged.
 

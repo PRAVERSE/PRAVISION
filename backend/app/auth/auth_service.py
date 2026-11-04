@@ -229,9 +229,9 @@ def get_env_auth_credentials() -> Tuple[Optional[str], Optional[str], Optional[s
         env_vals.get("JWT_SECRET")
     )
 
-    clean_user = username.strip().strip("'\"") if username else None
-    clean_pwd = password.strip().strip("'\"") if password is not None else None
-    clean_sec = secret.strip().strip("'\"") if secret else None
+    clean_user = username.strip() if username else None
+    clean_pwd = password if password is not None else None
+    clean_sec = secret.strip() if secret else None
 
     correlation_id = uuid.uuid4().hex[:8]
     logger.info(
@@ -244,6 +244,26 @@ def get_env_auth_credentials() -> Tuple[Optional[str], Optional[str], Optional[s
     )
 
     return (clean_user, clean_pwd, clean_sec)
+
+def get_deterministic_username_aliases(configured_identity: str) -> set[str]:
+    """
+    Computes the explicit, deterministic set of valid username representations for a configured identity.
+    Strictly prevents cross-domain or wildcard prefix collisions:
+    - If configured is 'user@domain.com':
+        Accepted identities: strictly 'user@domain.com' and the bare local part 'user' (case-insensitive).
+        Any input containing a DIFFERENT domain (e.g. 'user@other.org') is strictly rejected.
+    - If configured is 'admin':
+        Accepted identity: strictly 'admin' (case-insensitive).
+    """
+    clean = configured_identity.strip()
+    norm = clean.lower()
+    aliases = {clean, norm}
+    if "@" in clean:
+        local_part = clean.split("@", 1)[0].strip()
+        if local_part:
+            aliases.add(local_part)
+            aliases.add(local_part.lower())
+    return aliases
 
 class AuthService:
     """Manages authentication, RBAC authorizations, user lifecycles, and security auditing."""
@@ -283,28 +303,24 @@ class AuthService:
         correlation_id = uuid.uuid4().hex[:8]
 
         if env_user and env_pwd:
-            input_user = username_or_email.strip().lower()
-            target_user = env_user.strip().lower()
-            target_prefix = target_user.split("@")[0] if "@" in target_user else target_user
-            input_prefix = input_user.split("@")[0] if "@" in input_user else input_user
+            input_clean = username_or_email.strip()
+            input_norm = input_clean.lower()
+            allowed_aliases = get_deterministic_username_aliases(env_user)
 
-            user_matches = (
-                hmac.compare_digest(input_user, target_user) or
-                hmac.compare_digest(username_or_email.strip(), env_user.strip()) or
-                hmac.compare_digest(input_user, target_prefix) or
-                hmac.compare_digest(input_prefix, target_user) or
-                hmac.compare_digest(input_prefix, target_prefix) or
-                hmac.compare_digest(input_user, f"{target_prefix}@pravision.com") or
-                hmac.compare_digest(input_user, f"{target_prefix}@pravision.local") or
-                hmac.compare_digest(input_user, f"{target_user}@pravision.local")
+            # Prevent cross-domain spoofing: an email input with a different domain must NEVER match
+            if "@" in input_clean and "@" in env_user:
+                input_domain = input_norm.split("@", 1)[1]
+                target_domain = env_user.strip().lower().split("@", 1)[1]
+                user_matches = (input_domain == target_domain) and (input_norm in allowed_aliases)
+            else:
+                user_matches = (input_clean in allowed_aliases) or (input_norm in allowed_aliases)
+
+            # Preserve exact password comparison without blind character modification
+            pwd_matches = hmac.compare_digest(password, env_pwd) or (
+                len(env_pwd) != len(env_pwd.strip()) and hmac.compare_digest(password, env_pwd.strip())
             )
-            clean_env_pwd = env_pwd.strip().strip("'\"")
-            clean_in_pwd = password.strip().strip("'\"")
-            pwd_matches = (
-                hmac.compare_digest(password, env_pwd) or
-                hmac.compare_digest(password.strip(), env_pwd.strip()) or
-                hmac.compare_digest(clean_in_pwd, clean_env_pwd)
-            )
+
+            target_prefix = env_user.split("@")[0] if "@" in env_user else env_user
             logger.info(
                 f"[AUTH-{correlation_id}] Verification check from {ip_address}: "
                 f"user_matches={user_matches}, pwd_matches={pwd_matches}"

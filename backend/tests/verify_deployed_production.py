@@ -86,8 +86,9 @@ def record_local_check(step_num: int, title: str, condition: bool, details: str 
 
 def http_json(method: str, url: str, data: dict = None, token: str = None) -> tuple[int, dict, dict]:
     headers = {
-        "User-Agent": f"PRAVISION-SmokeTest/{TEST_RUN_ID}",
-        "Content-Type": "application/json"
+        "User-Agent": f"Mozilla/5.0 (Windows NT 10.0; Win64; x64) PRAVISION-SmokeTest/{TEST_RUN_ID}",
+        "Content-Type": "application/json",
+        "Connection": "close"
     }
     if token:
         headers["Authorization"] = f"Bearer {token}"

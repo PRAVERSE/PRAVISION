@@ -47,8 +47,9 @@ def log_test(step: int, title: str, condition: bool, details: str = ""):
 
 def req(method: str, url: str, data: dict = None, headers: dict = None, cookie: str = None) -> tuple[int, dict, dict, list]:
     hdrs = {
-        "User-Agent": "PRAVISION-AuthTest/1.0",
-        "Content-Type": "application/json"
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) PRAVISION-AuthTest/1.0",
+        "Content-Type": "application/json",
+        "Connection": "close"
     }
     if headers:
         hdrs.update(headers)
@@ -56,21 +57,29 @@ def req(method: str, url: str, data: dict = None, headers: dict = None, cookie: 
         hdrs["Cookie"] = cookie
 
     body = json.dumps(data).encode("utf-8") if data is not None else None
-    request = urllib.request.Request(url, data=body, headers=hdrs, method=method)
-    try:
-        with urllib.request.urlopen(request, timeout=20) as resp:
-            resp_body = resp.read().decode("utf-8")
-            res_json = json.loads(resp_body) if resp_body else {}
-            set_cookies = resp.headers.get_all("Set-Cookie") or []
-            return resp.status, res_json, dict(resp.headers), set_cookies
-    except urllib.error.HTTPError as e:
-        err_body = e.read().decode("utf-8")
+    
+    for attempt in range(2):
+        request = urllib.request.Request(url, data=body, headers=hdrs, method=method)
         try:
-            err_json = json.loads(err_body)
-        except Exception:
-            err_json = {"detail": err_body}
-        set_cookies = e.headers.get_all("Set-Cookie") or []
-        return e.code, err_json, dict(e.headers), set_cookies
+            with urllib.request.urlopen(request, timeout=25) as resp:
+                resp_body = resp.read().decode("utf-8")
+                res_json = json.loads(resp_body) if resp_body else {}
+                set_cookies = resp.headers.get_all("Set-Cookie") or []
+                return resp.status, res_json, dict(resp.headers), set_cookies
+        except urllib.error.HTTPError as e:
+            err_body = e.read().decode("utf-8")
+            try:
+                err_json = json.loads(err_body)
+            except Exception:
+                err_json = {"detail": err_body}
+            set_cookies = e.headers.get_all("Set-Cookie") or []
+            return e.code, err_json, dict(e.headers), set_cookies
+        except Exception as e:
+            if attempt == 0:
+                import time
+                time.sleep(1)
+                continue
+            raise e
 
 
 def test_mandatory_auth():

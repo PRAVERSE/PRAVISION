@@ -1,6 +1,11 @@
-// Cloudflare Pages Function: Reverse Proxy for PRAVISION API
+// Cloudflare Pages Function: Production Reverse Proxy for PRAVISION API
+
+interface Fetcher {
+  fetch: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+}
 
 interface PagesFunctionEnv {
+  PRAVISION_BACKEND?: Fetcher;
   PRAVISION_BACKEND_URL?: string;
   [key: string]: unknown;
 }
@@ -31,14 +36,10 @@ interface HeadersWithSetCookie extends Headers {
 
 export const onRequest: PagesFunction = async (context) => {
   const url = new URL(context.request.url);
-  const targetBackend = (context.env.PRAVISION_BACKEND_URL as string) || "https://lets-bracket-imaging-muslim.trycloudflare.com";
-  const backendUrl = new URL(targetBackend);
-  const forwardUrl = new URL(url.pathname + url.search, targetBackend);
-
   const origin = context.request.headers.get("Origin");
   const allowedOrigins = ["https://pravision.pages.dev"];
 
-  // Handle CORS preflight early
+  // Handle CORS preflight early with HTTP 204
   if (context.request.method === "OPTIONS") {
     const preflightHeaders = new Headers();
     if (origin && allowedOrigins.includes(origin)) {
@@ -51,14 +52,12 @@ export const onRequest: PagesFunction = async (context) => {
     return new Response(null, { status: 204, headers: preflightHeaders });
   }
 
-  // Handle WebSocket upgrade
-  if (context.request.headers.get("Upgrade")?.toLowerCase() === "websocket") {
-    return fetch(forwardUrl.toString(), context.request);
-  }
+  // Determine backend destination (VPC Service binding or explicitly configured environment URL)
+  const vpcService = context.env.PRAVISION_BACKEND;
+  const envBackendUrl = (context.env.PRAVISION_BACKEND_URL as string) || "";
 
   // Copy incoming headers
   const headers = new Headers(context.request.headers);
-  headers.set("Host", backendUrl.host);
   headers.set("X-Forwarded-Host", url.host);
   headers.set("X-Forwarded-Proto", url.protocol.replace(":", ""));
 
@@ -74,7 +73,51 @@ export const onRequest: PagesFunction = async (context) => {
     init.duplex = "half";
   }
 
-  const response = await fetch(forwardUrl.toString(), init);
+  let response: Response;
+
+  try {
+    if (vpcService && typeof vpcService.fetch === "function") {
+      // Route through permanent Cloudflare Tunnel via VPC Service Binding
+      const forwardPath = url.pathname + url.search;
+      headers.set("Host", "127.0.0.1:8000");
+      response = await vpcService.fetch(new URL(forwardPath, "http://127.0.0.1:8000").toString(), init);
+    } else if (envBackendUrl) {
+      // Route through explicitly configured persistent backend URL
+      const backendUrl = new URL(envBackendUrl);
+      headers.set("Host", backendUrl.host);
+      const forwardUrl = new URL(url.pathname + url.search, envBackendUrl);
+
+      // Handle WebSocket upgrade
+      if (context.request.headers.get("Upgrade")?.toLowerCase() === "websocket") {
+        return fetch(forwardUrl.toString(), context.request);
+      }
+
+      response = await fetch(forwardUrl.toString(), init);
+    } else {
+      return new Response(
+        JSON.stringify({
+          detail: "PRAVISION Gateway: Backend service unreachable. Connect permanent Cloudflare Tunnel (ID: 94e94e3b-360e-4a9e-abff-99753d401df8) or set PRAVISION_BACKEND_URL.",
+          status: "unavailable"
+        }),
+        {
+          status: 502,
+          headers: { "Content-Type": "application/json" }
+        }
+      );
+    }
+  } catch (err: unknown) {
+    const errorMsg = err instanceof Error ? err.message : String(err);
+    return new Response(
+      JSON.stringify({
+        detail: `PRAVISION Gateway: Upstream connection error (${errorMsg}). Verify backend engine and cloudflared tunnel are active.`,
+        status: "upstream_error"
+      }),
+      {
+        status: 502,
+        headers: { "Content-Type": "application/json" }
+      }
+    );
+  }
 
   // Strict CORS headers
   const newHeaders = new Headers(response.headers);

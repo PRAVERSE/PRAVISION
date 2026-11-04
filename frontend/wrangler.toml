@@ -2,3 +2,6 @@ name = "pravision"
 compatibility_date = "2024-09-23"
 pages_build_output_dir = "dist"
 
+[vars]
+PRAVISION_TUNNEL_ID = "94e94e3b-360e-4a9e-abff-99753d401df8"
+PRAVISION_TUNNEL_NAME = "pravision-tunnel"

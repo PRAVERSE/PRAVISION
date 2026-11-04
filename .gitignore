@@ -40,6 +40,8 @@ node_modules/
 backend/.backup_key*
 backend/.auth_secret*
 backend/.initial_admin_credentials*
+backend/.tunnel_token*
+*.tunnel_token*
 *.pravision_archive
 *.pravision_bkp
 *.log
