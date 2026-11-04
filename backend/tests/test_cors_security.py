@@ -53,3 +53,4 @@ def test_cors_allowlist():
 if __name__ == "__main__":
     test_cors_allowlist()
     print("ALL CORS SECURITY TESTS PASSED.")
+

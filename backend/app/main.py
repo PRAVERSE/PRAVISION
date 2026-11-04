@@ -12,7 +12,35 @@ from app.api.router import router as api_router
 from app.connectors.registry import connector_registry
 from app.privacy.privacy_controller import privacy_controller
 
+import re
+
+class SensitiveParamRedactingFilter(logging.Filter):
+    """
+    Redacts sensitive authentication parameters (token, ticket, password, secret, key)
+    from all log records before emission to disk or console.
+    """
+    REDACT_REGEX = re.compile(r'(token|ticket|password|secret|key|access_token)=([^&\s"\']+)', re.IGNORECASE)
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if isinstance(record.msg, str):
+            record.msg = self.REDACT_REGEX.sub(r'\1=[REDACTED]', record.msg)
+        if record.args:
+            if isinstance(record.args, dict):
+                record.args = {
+                    k: (self.REDACT_REGEX.sub(r'\1=[REDACTED]', v) if isinstance(v, str) else v)
+                    for k, v in record.args.items()
+                }
+            elif isinstance(record.args, (list, tuple)):
+                record.args = tuple(
+                    (self.REDACT_REGEX.sub(r'\1=[REDACTED]', a) if isinstance(a, str) else a)
+                    for a in record.args
+                )
+        return True
+
+redaction_filter = SensitiveParamRedactingFilter()
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
+logging.getLogger().addFilter(redaction_filter)
+logging.getLogger("uvicorn.access").addFilter(redaction_filter)
 logger = logging.getLogger("pravision.main")
 
 @asynccontextmanager

@@ -108,18 +108,53 @@ async def cancel_investigation(inv_id: str):
     orchestrator.cancel_investigation()
     return {"status": "cancelled"}
 
-# ----------------- WEBSOCKET LIVE STREAM -----------------
+# ----------------- WEBSOCKET LIVE STREAM & TICKET AUTH -----------------
+
+@router.post("/investigations/{inv_id}/ws-ticket")
+async def issue_websocket_ticket(request: Request, inv_id: str):
+    """
+    Issues a short-lived (60-second), single-use ticket for WebSocket authentication.
+    Binds the ticket to the authenticated user and targeted investigation.
+    """
+    from app.auth.auth_service import get_current_user
+    from app.auth.ws_ticket_manager import ws_ticket_manager
+    user = await get_current_user(request, None)
+    ticket = ws_ticket_manager.issue_ticket(
+        user_id=str(user.id),
+        username=user.username,
+        role=user.role,
+        investigation_id=inv_id
+    )
+    return {
+        "ticket": ticket,
+        "investigation_id": inv_id,
+        "expires_in": 60,
+        "type": "single_use"
+    }
 
 @router.websocket("/investigations/{inv_id}/live")
 async def investigation_live_socket(websocket: WebSocket, inv_id: str):
     await websocket.accept()
     
-    # 1. Authenticate WebSocket session
+    # 1. Authenticate WebSocket session (Single-use Ticket preferred; JWT fallback)
+    ticket = websocket.query_params.get("ticket")
     token = websocket.query_params.get("token")
     user_sub = "anonymous"
     
     from app.auth.auth_service import decode_jwt_token
-    if token:
+    from app.auth.ws_ticket_manager import ws_ticket_manager
+
+    if ticket:
+        ticket_data = ws_ticket_manager.consume_ticket(ticket, expected_investigation_id=inv_id)
+        if not ticket_data:
+            await websocket.send_json({
+                "type": "error",
+                "detail": "Authentication failed: Invalid, expired, or already consumed ticket"
+            })
+            await websocket.close(code=1008)
+            return
+        user_sub = ticket_data.get("username", "authenticated_user")
+    elif token:
         try:
             payload = decode_jwt_token(token)
             user_sub = payload.get("sub", "authenticated_user")
@@ -164,15 +199,25 @@ async def investigation_live_socket(websocket: WebSocket, inv_id: str):
                         "investigation_id": inv_id,
                         "status": "active"
                     })
-                elif msg_type == "auth" and not token:
+                elif msg_type == "auth" and not (ticket or token):
+                    auth_ticket = msg.get("ticket")
                     auth_token = msg.get("token")
-                    try:
-                        p = decode_jwt_token(auth_token)
-                        await websocket.send_json({"type": "auth_ok", "user": p.get("sub")})
-                    except Exception as err:
-                        await websocket.send_json({"type": "auth_error", "detail": str(err)})
-                        await websocket.close(code=1008)
-                        break
+                    if auth_ticket:
+                        t_data = ws_ticket_manager.consume_ticket(auth_ticket, expected_investigation_id=inv_id)
+                        if t_data:
+                            await websocket.send_json({"type": "auth_ok", "user": t_data.get("username")})
+                        else:
+                            await websocket.send_json({"type": "auth_error", "detail": "Invalid or expired ticket"})
+                            await websocket.close(code=1008)
+                            break
+                    elif auth_token:
+                        try:
+                            p = decode_jwt_token(auth_token)
+                            await websocket.send_json({"type": "auth_ok", "user": p.get("sub")})
+                        except Exception as err:
+                            await websocket.send_json({"type": "auth_error", "detail": str(err)})
+                            await websocket.close(code=1008)
+                            break
                 else:
                     await websocket.send_json({
                         "type": "ack",

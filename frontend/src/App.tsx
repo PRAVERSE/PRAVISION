@@ -143,72 +143,89 @@ export const App: React.FC = () => {
     }
 
     const token = getAuthToken();
+
+    const initWebSocket = (targetUrl: string) => {
+      const ws = new WebSocket(targetUrl);
+      socketRef.current = ws;
+
+      ws.onopen = () => {
+        setWsStatus('connected');
+        reconnectAttemptsRef.current = 0;
+      };
+
+      ws.onmessage = async (event) => {
+        try {
+          const msg = JSON.parse(event.data);
+          const eventKey = `${msg.type}_${msg.connector || ''}_${msg.progress || ''}_${msg.findings_count || ''}`;
+          if (processedEventIdsRef.current.has(eventKey)) {
+            return; // Deduplicate repeat events
+          }
+          processedEventIdsRef.current.add(eventKey);
+          if (processedEventIdsRef.current.size > 200) {
+            processedEventIdsRef.current.clear();
+          }
+
+          if (msg.type === 'findings_updated' || msg.type === 'connector_completed') {
+            const [res, gr, invStatus] = await Promise.all([
+              osintApi.getInvestigationResults(invId),
+              osintApi.getInvestigationGraph(invId),
+              osintApi.getActiveInvestigation()
+            ]);
+            setFindings(res.findings);
+            setGraph(gr);
+            if (invStatus.investigation) {
+              setActiveInvestigation(invStatus.investigation);
+            }
+          } else if (msg.type === 'investigation_finished') {
+            const invStatus = await osintApi.getActiveInvestigation();
+            if (invStatus.investigation) {
+              setActiveInvestigation(invStatus.investigation);
+            }
+          }
+        } catch (err) {
+          console.error('WS parse error:', err);
+        }
+      };
+
+      ws.onerror = (err) => {
+        console.warn('WS communication error:', err);
+      };
+
+      ws.onclose = (event) => {
+        setWsStatus('disconnected');
+        socketRef.current = null;
+
+        // Only attempt reconnection if closure was abnormal and investigation is still running
+        if (event.code !== 1000 && activeInvestigation?.status === 'running') {
+          const maxAttempts = 5;
+          if (reconnectAttemptsRef.current < maxAttempts) {
+            const backoffDelay = Math.min(1000 * Math.pow(2, reconnectAttemptsRef.current), 16000);
+            reconnectAttemptsRef.current += 1;
+            reconnectTimeoutRef.current = setTimeout(() => {
+              connectWebSocket(invId);
+            }, backoffDelay);
+          }
+        }
+      };
+    };
+
     if (token) {
-      wsUrl += `?token=${encodeURIComponent(token)}`;
+      const apiPrefix = (API_BASE.startsWith('http://') || API_BASE.startsWith('https://')) ? API_BASE : '/api';
+      fetch(`${apiPrefix}/investigations/${invId}/ws-ticket`, {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${token}` }
+      })
+      .then(res => res.ok ? res.json() : null)
+      .then(data => {
+        const param = data?.ticket ? `ticket=${encodeURIComponent(data.ticket)}` : `token=${encodeURIComponent(token)}`;
+        initWebSocket(`${wsUrl}?${param}`);
+      })
+      .catch(() => {
+        initWebSocket(`${wsUrl}?token=${encodeURIComponent(token)}`);
+      });
+    } else {
+      initWebSocket(wsUrl);
     }
-
-    const ws = new WebSocket(wsUrl);
-    socketRef.current = ws;
-
-    ws.onopen = () => {
-      setWsStatus('connected');
-      reconnectAttemptsRef.current = 0;
-    };
-
-    ws.onmessage = async (event) => {
-      try {
-        const msg = JSON.parse(event.data);
-        const eventKey = `${msg.type}_${msg.connector || ''}_${msg.progress || ''}_${msg.findings_count || ''}`;
-        if (processedEventIdsRef.current.has(eventKey)) {
-          return; // Deduplicate repeat events
-        }
-        processedEventIdsRef.current.add(eventKey);
-        if (processedEventIdsRef.current.size > 200) {
-          processedEventIdsRef.current.clear();
-        }
-
-        if (msg.type === 'findings_updated' || msg.type === 'connector_completed') {
-          const [res, gr, invStatus] = await Promise.all([
-            osintApi.getInvestigationResults(invId),
-            osintApi.getInvestigationGraph(invId),
-            osintApi.getActiveInvestigation()
-          ]);
-          setFindings(res.findings);
-          setGraph(gr);
-          if (invStatus.investigation) {
-            setActiveInvestigation(invStatus.investigation);
-          }
-        } else if (msg.type === 'investigation_finished') {
-          const invStatus = await osintApi.getActiveInvestigation();
-          if (invStatus.investigation) {
-            setActiveInvestigation(invStatus.investigation);
-          }
-        }
-      } catch (err) {
-        console.error('WS parse error:', err);
-      }
-    };
-
-    ws.onerror = (err) => {
-      console.warn('WS communication error:', err);
-    };
-
-    ws.onclose = (event) => {
-      setWsStatus('disconnected');
-      socketRef.current = null;
-
-      // Only attempt reconnection if closure was abnormal and investigation is still running
-      if (event.code !== 1000 && activeInvestigation?.status === 'running') {
-        const maxAttempts = 5;
-        if (reconnectAttemptsRef.current < maxAttempts) {
-          const backoffDelay = Math.min(1000 * Math.pow(2, reconnectAttemptsRef.current), 16000);
-          reconnectAttemptsRef.current += 1;
-          reconnectTimeoutRef.current = setTimeout(() => {
-            connectWebSocket(invId);
-          }, backoffDelay);
-        }
-      }
-    };
   }, [activeInvestigation?.status]);
 
   useEffect(() => {
