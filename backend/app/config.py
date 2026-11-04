@@ -29,12 +29,15 @@ class PravisionSettings(BaseModel):
     # Server network binding
     host: str = "127.0.0.1"
     port: int = 8000
-    cors_origins: list[str] = [
-        "http://localhost:5173",
-        "http://127.0.0.1:5173",
-        "http://localhost:8000",
-        "http://127.0.0.1:8000",
-    ]
+    cors_origins: list[str] = Field(
+        default_factory=lambda: [
+            "http://localhost:5173",
+            "http://127.0.0.1:5173",
+            "http://localhost:8000",
+            "http://127.0.0.1:8000",
+            *[orig.strip() for orig in os.environ.get("CORS_ORIGINS", "").split(",") if orig.strip()]
+        ]
+    )
     
     # Critical Privacy Directive: Absolutely NO persistent target history
     persist_investigations: bool = False

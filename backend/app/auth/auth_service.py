@@ -124,6 +124,48 @@ def decode_jwt_token(token: str) -> Dict[str, Any]:
         raise ValueError("Token has expired.")
     return payload
 
+DISALLOWED_DEFAULT_PASSWORDS = {
+    "pravisionadmin2026!",
+    "pravisionofficer2026!",
+    "pravisionanalyst2026!",
+    "changethisadminpassword2026!",
+    "changethisofficerpassword2026!",
+    "changethisanalystpassword2026!",
+    "admin",
+    "password",
+    "administrator",
+    "admin123",
+    "12345678",
+    "root",
+}
+
+def validate_and_sanitize_initial_password(raw_pwd: Optional[str], role_name: str) -> str:
+    """Strictly validates initial bootstrap credentials, rejecting known defaults or weak passwords."""
+    is_prod = os.environ.get("ENVIRONMENT", "").lower() == "production" or os.environ.get("PRAVISION_ENV", "").lower() == "production"
+    
+    if not raw_pwd or not raw_pwd.strip():
+        if is_prod:
+            raise ValueError(
+                f"Production security failure: {role_name.upper()}_INITIAL_PASSWORD is required in production. "
+                "You must set a unique, complex password with minimum 12 characters."
+            )
+        # Generate cryptographically strong random password for non-production environments
+        generated = secrets.token_urlsafe(16)
+        logger.warning(f"No {role_name.upper()}_INITIAL_PASSWORD supplied. Generated secure random credential.")
+        return generated
+
+    clean_pwd = raw_pwd.strip()
+    if clean_pwd.lower() in DISALLOWED_DEFAULT_PASSWORDS:
+        raise ValueError(
+            f"Security failure: {role_name.upper()}_INITIAL_PASSWORD uses a prohibited known default password ({clean_pwd}). "
+            "You must supply a strong, custom password."
+        )
+    if len(clean_pwd) < 12:
+        raise ValueError(
+            f"Security failure: {role_name.upper()}_INITIAL_PASSWORD must be at least 12 characters (received {len(clean_pwd)})."
+        )
+    return clean_pwd
+
 class AuthService:
     """Manages authentication, RBAC authorizations, user lifecycles, and security auditing."""
 
@@ -290,9 +332,9 @@ class AuthService:
                 return
 
             logger.info("Initializing multi-user security credentials...")
-            admin_pwd = os.environ.get("ADMIN_INITIAL_PASSWORD") or "PravisionAdmin2026!"
-            officer_pwd = os.environ.get("OFFICER_INITIAL_PASSWORD") or "PravisionOfficer2026!"
-            analyst_pwd = os.environ.get("ANALYST_INITIAL_PASSWORD") or "PravisionAnalyst2026!"
+            admin_pwd = validate_and_sanitize_initial_password(os.environ.get("ADMIN_INITIAL_PASSWORD"), "admin")
+            officer_pwd = validate_and_sanitize_initial_password(os.environ.get("OFFICER_INITIAL_PASSWORD"), "officer")
+            analyst_pwd = validate_and_sanitize_initial_password(os.environ.get("ANALYST_INITIAL_PASSWORD"), "analyst")
 
             # Write secure notice
             ADMIN_CREDS_FILE.write_text(

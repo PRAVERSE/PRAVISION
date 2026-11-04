@@ -12,3 +12,4 @@ ingress:
       tcpKeepAlive: 30s
   # Catch-all rule
   - service: http_status:404
+

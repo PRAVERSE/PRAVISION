@@ -202,3 +202,4 @@ PRAVISION features dual-layer redundancy:
 - [ ] Live WebSocket connects at `wss://api.yourdomain.com/api/investigations/{id}/live`.
 - [ ] OpenSky aircraft telemetry stream functions through `/api/geospatial/flights`.
 - [ ] Case dossier AES-256-GCM streaming download operates without timeout.
+

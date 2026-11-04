@@ -62,3 +62,4 @@ services:
 volumes:
   pravision_data:
     name: pravision_production_storage
+

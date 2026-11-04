@@ -17,9 +17,9 @@ services:
       - S3_BUCKET_NAME=${S3_BUCKET_NAME:-pravision-evidence}
       - S3_REGION=${S3_REGION:-ap-southeast-1}
       - JWT_SECRET=${JWT_SECRET:-}
-      - ADMIN_INITIAL_PASSWORD=${ADMIN_INITIAL_PASSWORD:-PravisionAdmin2026!}
-      - OFFICER_INITIAL_PASSWORD=${OFFICER_INITIAL_PASSWORD:-PravisionOfficer2026!}
-      - ANALYST_INITIAL_PASSWORD=${ANALYST_INITIAL_PASSWORD:-PravisionAnalyst2026!}
+      - ADMIN_INITIAL_PASSWORD=${ADMIN_INITIAL_PASSWORD:-}
+      - OFFICER_INITIAL_PASSWORD=${OFFICER_INITIAL_PASSWORD:-}
+      - ANALYST_INITIAL_PASSWORD=${ANALYST_INITIAL_PASSWORD:-}
       - WORKSPACE_DIR=/app/backend/data
     volumes:
       - pravision_data:/app/backend/data

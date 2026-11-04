@@ -5,7 +5,7 @@ import { CommandCenterView } from './views/CommandCenterView';
 import { ViewLoadingFallback } from './components/ViewLoadingFallback';
 import { lazyWithRetry } from './utils/lazyWithRetry';
 
-import { osintApi, authApi, getAuthToken } from './services/api';
+import { osintApi, authApi, getAuthToken, API_BASE } from './services/api';
 import { ActiveInvestigation, EvidenceFinding, IntelligenceGraph, ConnectorManifest, UserProfile } from './types/osint';
 import { LoginModal } from './components/LoginModal';
 import { EntityDossierDrawer } from './components/EntityDossierDrawer';
@@ -131,10 +131,16 @@ export const App: React.FC = () => {
     }
 
     setWsStatus('connecting');
+    let wsUrl: string;
     const wsBase = (import.meta.env.VITE_WS_URL as string) || '';
-    const wsUrl = wsBase
-      ? `${wsBase.replace(/^http/, 'ws')}/api/investigations/${invId}/live`
-      : `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.host}/api/investigations/${invId}/live`;
+    if (wsBase) {
+      wsUrl = `${wsBase.replace(/^http/, 'ws')}/api/investigations/${invId}/live`;
+    } else if (API_BASE.startsWith('http://') || API_BASE.startsWith('https://')) {
+      const derivedWs = API_BASE.replace(/^http/, 'ws').replace(/\/api\/?$/, '');
+      wsUrl = `${derivedWs}/api/investigations/${invId}/live`;
+    } else {
+      wsUrl = `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.host}/api/investigations/${invId}/live`;
+    }
 
     const ws = new WebSocket(wsUrl);
     socketRef.current = ws;
