@@ -226,9 +226,9 @@ def get_env_auth_credentials() -> Tuple[Optional[str], Optional[str], Optional[s
         env_vals.get("JWT_SECRET")
     )
 
-    clean_user = username.strip() if username else None
-    clean_pwd = password.strip() if password is not None else None
-    clean_sec = secret.strip() if secret else None
+    clean_user = username.strip().strip("'\"") if username else None
+    clean_pwd = password.strip().strip("'\"") if password is not None else None
+    clean_sec = secret.strip().strip("'\"") if secret else None
 
     correlation_id = uuid.uuid4().hex[:8]
     logger.info(
@@ -281,14 +281,25 @@ class AuthService:
         if env_user and env_pwd:
             input_user = username_or_email.strip().lower()
             target_user = env_user.strip().lower()
+            target_prefix = target_user.split("@")[0] if "@" in target_user else target_user
+            input_prefix = input_user.split("@")[0] if "@" in input_user else input_user
+
             user_matches = (
                 hmac.compare_digest(input_user, target_user) or
                 hmac.compare_digest(username_or_email.strip(), env_user.strip()) or
+                hmac.compare_digest(input_user, target_prefix) or
+                hmac.compare_digest(input_prefix, target_user) or
+                hmac.compare_digest(input_prefix, target_prefix) or
+                hmac.compare_digest(input_user, f"{target_prefix}@pravision.com") or
+                hmac.compare_digest(input_user, f"{target_prefix}@pravision.local") or
                 hmac.compare_digest(input_user, f"{target_user}@pravision.local")
             )
+            clean_env_pwd = env_pwd.strip().strip("'\"")
+            clean_in_pwd = password.strip().strip("'\"")
             pwd_matches = (
                 hmac.compare_digest(password, env_pwd) or
-                hmac.compare_digest(password.strip(), env_pwd.strip())
+                hmac.compare_digest(password.strip(), env_pwd.strip()) or
+                hmac.compare_digest(clean_in_pwd, clean_env_pwd)
             )
             logger.info(
                 f"[AUTH-{correlation_id}] Verification check from {ip_address}: "
@@ -300,12 +311,19 @@ class AuthService:
         async with async_session_maker() as session:
             if is_env_auth:
                 # Provision or synchronize the designated .env admin user in PostgreSQL
-                stmt = select(UserModel).where(UserModel.username == env_user)
-                user = (await session.execute(stmt)).scalar_one_or_none()
+                stmt = select(UserModel).where(
+                    (UserModel.username == env_user) |
+                    (UserModel.username == target_prefix) |
+                    (UserModel.email == env_user) |
+                    (UserModel.email == f"{target_prefix}@pravision.com") |
+                    (UserModel.email == f"{env_user}@pravision.local")
+                )
+                user = (await session.execute(stmt)).scalars().first()
+                clean_email = env_user if "@" in env_user else f"{env_user}@pravision.com"
                 if not user:
                     user = UserModel(
                         username=env_user,
-                        email=f"{env_user}@pravision.local",
+                        email=clean_email,
                         hashed_password=hash_password(env_pwd),
                         role="admin",
                         full_name="Platform Administrator",
@@ -322,6 +340,8 @@ class AuthService:
                     user.failed_login_attempts = 0
                     user.locked_until = None
                     user.last_login = datetime.utcnow()
+                    if "@pravision.local" in user.email and "@" in env_user:
+                        user.email = env_user
                     await session.commit()
 
                 self._clear_ip_failure(ip_address)
@@ -344,11 +364,17 @@ class AuthService:
                 }
 
             # If not .env credentials, authenticate against standard provisioned database accounts
+            input_clean = username_or_email.strip()
+            input_lower = input_clean.lower()
+            input_pfx = input_lower.split("@")[0]
             stmt = select(UserModel).where(
-                (UserModel.username == username_or_email.strip()) | (UserModel.email == username_or_email.strip().lower())
+                (UserModel.username == input_clean) |
+                (UserModel.username == input_lower) |
+                (UserModel.username == input_pfx) |
+                (UserModel.email == input_lower)
             )
             res = await session.execute(stmt)
-            user = res.scalar_one_or_none()
+            user = res.scalars().first()
 
             if not user:
                 self._record_ip_failure(ip_address)
@@ -576,7 +602,7 @@ class AuthService:
                 session.add(log)
                 await session.commit()
         except Exception as e:
-            logger.error(f"Audit log recording error: {e}")
+            logger.warning(f"Audit log recording suppressed non-fatal error: {e}")
 
 auth_service = AuthService()
 

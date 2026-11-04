@@ -28,8 +28,8 @@ def _extract_client_ip(request: Request) -> str:
 
 @auth_router.post("/login")
 async def login(request: Request, response: Response, payload: Dict[str, str] = Body(...)):
-    username = payload.get("username", "").strip()
-    password = payload.get("password", "").strip()
+    username = str(payload.get("username") or payload.get("user") or payload.get("email") or "").strip()
+    password = str(payload.get("password") or "").strip()
     if not username or not password:
         raise HTTPException(status_code=400, detail="Username and password are required.")
     
