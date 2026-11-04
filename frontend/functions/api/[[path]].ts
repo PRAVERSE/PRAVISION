@@ -25,10 +25,17 @@ export const onRequest: PagesFunction = async (context) => {
 
   const response = await fetch(forwardUrl.toString(), init);
 
-  // Clone response and attach CORS headers
+  // Strict CORS headers
   const newHeaders = new Headers(response.headers);
-  newHeaders.set("Access-Control-Allow-Origin", url.origin);
-  newHeaders.set("Access-Control-Allow-Credentials", "true");
+  const origin = context.request.headers.get("Origin");
+  const allowedOrigins = ["https://pravision.pages.dev"];
+  if (origin && allowedOrigins.includes(origin)) {
+    newHeaders.set("Access-Control-Allow-Origin", origin);
+    newHeaders.set("Access-Control-Allow-Credentials", "true");
+  } else {
+    newHeaders.delete("Access-Control-Allow-Origin");
+    newHeaders.delete("Access-Control-Allow-Credentials");
+  }
   newHeaders.set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS, PATCH");
   newHeaders.set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Requested-With");
 
@@ -38,3 +45,4 @@ export const onRequest: PagesFunction = async (context) => {
     headers: newHeaders,
   });
 };
+

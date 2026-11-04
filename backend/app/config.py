@@ -20,6 +20,20 @@ class InvestigationLimits(BaseModel):
     max_file_size_mb: int = Field(default=25, ge=1, le=100)
     enable_recursive_expansion: bool = Field(default=True)
 
+def get_configured_cors_origins() -> list[str]:
+    is_prod = os.environ.get("ENVIRONMENT", "").lower() == "production" or os.environ.get("PRAVISION_ENV", "").lower() == "production"
+    prod_origins = ["https://pravision.pages.dev"]
+    env_origins = [orig.strip() for orig in os.environ.get("CORS_ORIGINS", "").split(",") if orig.strip()]
+    if is_prod:
+        return list(dict.fromkeys(prod_origins + env_origins))
+    dev_origins = [
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
+        "http://localhost:8000",
+        "http://127.0.0.1:8000",
+    ]
+    return list(dict.fromkeys(prod_origins + dev_origins + env_origins))
+
 class PravisionSettings(BaseModel):
     app_name: str = "PRAVISION"
     full_name: str = "PRAVISION — Universal OSINT & Intelligence Platform"
@@ -29,15 +43,7 @@ class PravisionSettings(BaseModel):
     # Server network binding
     host: str = "127.0.0.1"
     port: int = 8000
-    cors_origins: list[str] = Field(
-        default_factory=lambda: [
-            "http://localhost:5173",
-            "http://127.0.0.1:5173",
-            "http://localhost:8000",
-            "http://127.0.0.1:8000",
-            *[orig.strip() for orig in os.environ.get("CORS_ORIGINS", "").split(",") if orig.strip()]
-        ]
-    )
+    cors_origins: list[str] = Field(default_factory=get_configured_cors_origins)
     
     # Critical Privacy Directive: Absolutely NO persistent target history
     persist_investigations: bool = False

@@ -192,6 +192,27 @@ class B2StorageService:
 
         return deleted
 
+    def get_minimal_status(self) -> Dict[str, Any]:
+        """Returns minimal operational state without leaking endpoints, buckets, or paths."""
+        return {
+            "status": "connected" if self.is_cloud_enabled else "local_fallback"
+        }
+
+    def get_safe_status(self) -> Dict[str, Any]:
+        """Returns sanitized status for authenticated UI views, excluding filesystem paths and endpoints."""
+        if self.is_cloud_enabled:
+            storage_mode = "Neon Object Storage (S3)" if self.is_neon else "Backblaze B2 (Cloud)"
+        else:
+            storage_mode = "Local Evidence Vault (Filesystem)"
+
+        return {
+            "b2_cloud_configured": self.is_cloud_enabled,
+            "cloud_enabled": self.is_cloud_enabled,
+            "is_neon": self.is_neon,
+            "provider": "Neon" if self.is_neon else ("Backblaze B2" if self.is_cloud_enabled else "Local"),
+            "storage_mode": storage_mode
+        }
+
     def get_status(self) -> Dict[str, Any]:
         """Returns storage connection status and vault metrics."""
         vault_files = list(LOCAL_VAULT_DIR.glob("*"))

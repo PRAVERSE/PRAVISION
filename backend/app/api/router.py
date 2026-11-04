@@ -17,7 +17,7 @@ from app.privacy.privacy_controller import privacy_controller
 from app.media_forensics.metadata_extractor import metadata_extractor, hash_calculator
 from app.media_forensics.forensic_analyzer import forensic_analyzer
 
-from app.storage.database import check_db_health
+from app.storage.database import check_db_health, get_minimal_db_status
 from app.storage.case_manager import case_manager
 from app.storage.b2_storage import b2_storage
 from app.storage.backup_system import backup_system, backup_scheduler
@@ -113,25 +113,97 @@ async def cancel_investigation(inv_id: str):
 @router.websocket("/investigations/{inv_id}/live")
 async def investigation_live_socket(websocket: WebSocket, inv_id: str):
     await websocket.accept()
+    
+    # 1. Authenticate WebSocket session
+    token = websocket.query_params.get("token")
+    user_sub = "anonymous"
+    
+    from app.auth.auth_service import decode_jwt_token
+    if token:
+        try:
+            payload = decode_jwt_token(token)
+            user_sub = payload.get("sub", "authenticated_user")
+        except Exception as e:
+            await websocket.send_json({"type": "error", "detail": f"Authentication failed: {str(e)}"})
+            await websocket.close(code=1008)
+            return
+
+    # 2. Emit initial connection ready handshake
+    await websocket.send_json({
+        "type": "connected",
+        "status": "ready",
+        "investigation_id": inv_id,
+        "user": user_sub
+    })
+
+    # 3. Emit initial snapshot if active investigation matches
+    inv = orchestrator.get_active()
+    if inv and inv.id == inv_id:
+        await websocket.send_json({
+            "type": "initial_state",
+            "investigation": inv.dict(),
+            "findings_count": len(orchestrator.get_findings()),
+            "relationships_count": len(orchestrator.get_graph().edges)
+        })
+
     queue = asyncio.Queue()
     orchestrator.register_event_listener(queue)
-    try:
-        # Send initial state snapshot
-        inv = orchestrator.get_active()
-        if inv and inv.id == inv_id:
-            await websocket.send_json({
-                "type": "initial_state",
-                "investigation": inv.dict(),
-                "findings_count": len(orchestrator.get_findings()),
-                "relationships_count": len(orchestrator.get_graph().edges)
-            })
 
-        while True:
-            # Wait for internal event or client ping
-            event = await queue.get()
-            await websocket.send_json(event)
-    except WebSocketDisconnect:
-        pass
+    async def client_listener():
+        try:
+            while True:
+                data = await websocket.receive_text()
+                try:
+                    msg = json.loads(data)
+                except Exception:
+                    msg = {"raw": data}
+                msg_type = msg.get("type") or msg.get("action")
+                if msg_type == "ping":
+                    await websocket.send_json({
+                        "type": "pong",
+                        "investigation_id": inv_id,
+                        "status": "active"
+                    })
+                elif msg_type == "auth" and not token:
+                    auth_token = msg.get("token")
+                    try:
+                        p = decode_jwt_token(auth_token)
+                        await websocket.send_json({"type": "auth_ok", "user": p.get("sub")})
+                    except Exception as err:
+                        await websocket.send_json({"type": "auth_error", "detail": str(err)})
+                        await websocket.close(code=1008)
+                        break
+                else:
+                    await websocket.send_json({
+                        "type": "ack",
+                        "investigation_id": inv_id,
+                        "echo": msg
+                    })
+        except WebSocketDisconnect:
+            pass
+        except Exception:
+            pass
+
+    async def event_forwarder():
+        try:
+            while True:
+                event = await queue.get()
+                await websocket.send_json(event)
+        except WebSocketDisconnect:
+            pass
+        except Exception:
+            pass
+
+    listener_task = asyncio.create_task(client_listener())
+    forwarder_task = asyncio.create_task(event_forwarder())
+
+    try:
+        done, pending = await asyncio.wait(
+            [listener_task, forwarder_task],
+            return_when=asyncio.FIRST_COMPLETED
+        )
+        for task in pending:
+            task.cancel()
     finally:
         orchestrator.unregister_event_listener(queue)
 
@@ -371,7 +443,64 @@ async def get_case_members(request: Request, case_id: str):
 # ----------------- STORAGE & VAULT (STAGE 5) -----------------
 
 @router.get("/storage/status")
-async def get_storage_status():
+async def get_storage_status(request: Request):
+    """
+    Public minimal operational liveness endpoint.
+    Strictly removes all filesystem paths, database hostnames/connection details,
+    storage endpoint URLs, bucket names, and internal file counts.
+    
+    If invoked by an authenticated investigator session, returns safe UI telemetry
+    (backend name, latency, mode) without leaking infrastructure secrets.
+    """
+    auth_header = request.headers.get("Authorization", "")
+    token = auth_header[7:] if auth_header.startswith("Bearer ") else None
+    
+    db_min = await get_minimal_db_status()
+    s3_min = b2_storage.get_minimal_status()
+    
+    # Check if this is an authenticated session
+    authenticated = False
+    if token:
+        try:
+            from app.auth.auth_service import decode_jwt_token
+            payload = decode_jwt_token(token)
+            if payload.get("sub"):
+                authenticated = True
+        except Exception:
+            authenticated = False
+
+    if authenticated:
+        db_health = await check_db_health()
+        safe_db = {
+            "status": db_health.get("status", "unknown"),
+            "backend": db_health.get("backend", "unknown"),
+            "latency_ms": db_health.get("latency_ms", 0),
+            "is_postgres": db_health.get("is_postgres", False),
+            "is_neon": db_health.get("is_neon", False)
+        }
+        return {
+            "status": "healthy" if db_min["status"] == "connected" else "degraded",
+            "database": safe_db,
+            "object_storage": b2_storage.get_safe_status()
+        }
+
+    # Public unauthenticated minimal response: zero infrastructure leaks
+    return {
+        "status": "healthy" if db_min["status"] == "connected" else "degraded",
+        "database": db_min["status"],
+        "storage": s3_min["status"]
+    }
+
+@router.get("/storage/diagnostics")
+async def get_storage_diagnostics(request: Request):
+    """
+    Detailed system diagnostics endpoint, restricted strictly to authenticated Administrators.
+    """
+    from app.auth.auth_service import get_current_user
+    user = await get_current_user(request, None)
+    if user.role != "admin":
+        raise HTTPException(status_code=403, detail="Forbidden: Admin role required for infrastructure diagnostics.")
+        
     db_health = await check_db_health()
     b2_status = b2_storage.get_status()
     return {

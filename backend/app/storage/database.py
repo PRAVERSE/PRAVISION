@@ -143,6 +143,15 @@ async def init_db():
             logger.warning(f"Database initialization attempt {attempt} failed ({e}), retrying in 1s...")
             await asyncio.sleep(1.0)
 
+async def get_minimal_db_status() -> Dict[str, Any]:
+    """Minimal liveness probe for database engine, leaking zero credentials or connection details."""
+    try:
+        async with async_session_maker() as session:
+            await session.execute(text("SELECT 1;"))
+        return {"status": "connected"}
+    except Exception:
+        return {"status": "disconnected"}
+
 async def check_db_health() -> Dict[str, Any]:
     """Health check endpoint for DB engine."""
     import time

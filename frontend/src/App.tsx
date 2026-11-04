@@ -142,6 +142,11 @@ export const App: React.FC = () => {
       wsUrl = `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.host}/api/investigations/${invId}/live`;
     }
 
+    const token = getAuthToken();
+    if (token) {
+      wsUrl += `?token=${encodeURIComponent(token)}`;
+    }
+
     const ws = new WebSocket(wsUrl);
     socketRef.current = ws;
 
