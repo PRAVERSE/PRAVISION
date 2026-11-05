@@ -237,9 +237,7 @@ def get_env_auth_credentials() -> Tuple[Optional[str], Optional[str], Optional[s
     logger.info(
         f"[AUTH-{correlation_id}] Loaded auth credentials configuration: "
         f"username_configured={bool(clean_user)}, "
-        f"username_len={len(clean_user) if clean_user else 0}, "
         f"password_configured={bool(clean_pwd)}, "
-        f"password_len={len(clean_pwd) if clean_pwd else 0}, "
         f"secret_configured={bool(clean_sec)}"
     )
 
@@ -315,15 +313,13 @@ class AuthService:
             else:
                 user_matches = (input_clean in allowed_aliases) or (input_norm in allowed_aliases)
 
-            # Preserve exact password comparison without blind character modification
-            pwd_matches = hmac.compare_digest(password, env_pwd) or (
-                len(env_pwd) != len(env_pwd.strip()) and hmac.compare_digest(password, env_pwd.strip())
-            )
+            # Preserve exact cryptographic password comparison (strictly zero whitespace normalization)
+            pwd_matches = hmac.compare_digest(password, env_pwd)
 
             target_prefix = env_user.split("@")[0] if "@" in env_user else env_user
             logger.info(
-                f"[AUTH-{correlation_id}] Verification check from {ip_address}: "
-                f"user_matches={user_matches}, pwd_matches={pwd_matches}"
+                f"[AUTH-{correlation_id}] Authentication evaluation completed for source {ip_address}: "
+                f"outcome={'granted' if (user_matches and pwd_matches) else 'denied'}"
             )
             if user_matches and pwd_matches:
                 is_env_auth = True

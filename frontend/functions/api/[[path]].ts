@@ -94,10 +94,13 @@ export const onRequest: PagesFunction = async (context) => {
 
       response = await fetch(forwardUrl.toString(), init);
     } else {
+      const correlationId = crypto.randomUUID ? crypto.randomUUID().slice(0, 8) : Math.random().toString(36).substring(2, 10);
+      console.error(`[GATEWAY-CONFIG-${correlationId}] Upstream gateway misconfigured: Neither PRAVISION_BACKEND nor PRAVISION_BACKEND_URL available.`);
       return new Response(
         JSON.stringify({
-          detail: "PRAVISION Gateway: Backend service unreachable. Connect permanent Cloudflare Tunnel (ID: 94e94e3b-360e-4a9e-abff-99753d401df8) or set PRAVISION_BACKEND_URL.",
-          status: "unavailable"
+          detail: "Bad Gateway: Upstream service temporarily unavailable.",
+          correlation_id: correlationId,
+          status: "gateway_error"
         }),
         {
           status: 502,
@@ -106,11 +109,14 @@ export const onRequest: PagesFunction = async (context) => {
       );
     }
   } catch (err: unknown) {
+    const correlationId = crypto.randomUUID ? crypto.randomUUID().slice(0, 8) : Math.random().toString(36).substring(2, 10);
     const errorMsg = err instanceof Error ? err.message : String(err);
+    console.error(`[GATEWAY-ERR-${correlationId}] Upstream connection failure:`, errorMsg);
     return new Response(
       JSON.stringify({
-        detail: `PRAVISION Gateway: Upstream connection error (${errorMsg}). Verify backend engine and cloudflared tunnel are active.`,
-        status: "upstream_error"
+        detail: "Bad Gateway: Upstream service temporarily unavailable.",
+        correlation_id: correlationId,
+        status: "gateway_error"
       }),
       {
         status: 502,

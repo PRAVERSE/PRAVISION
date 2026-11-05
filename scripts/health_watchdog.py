@@ -65,12 +65,13 @@ def start_backend():
     ]
     env = os.environ.copy()
     env["PYTHONIOENCODING"] = "utf-8"
+    backend_log = open(LOG_DIR / "backend.log", "a", encoding="utf-8")
     backend_proc = subprocess.Popen(
         cmd,
         cwd=str(ROOT_DIR),
         env=env,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL
+        stdout=backend_log,
+        stderr=backend_log
     )
     logger.info(f"Backend started with PID {backend_proc.pid}.")
 
@@ -88,11 +89,12 @@ def start_tunnel():
             "tunnel", "run",
             "--token", token
         ]
+        tunnel_log = open(LOG_DIR / "tunnel.log", "a", encoding="utf-8")
         tunnel_proc = subprocess.Popen(
             cmd,
             cwd=str(ROOT_DIR),
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL
+            stdout=tunnel_log,
+            stderr=tunnel_log
         )
         logger.info(f"Tunnel process started with PID {tunnel_proc.pid}.")
     else:

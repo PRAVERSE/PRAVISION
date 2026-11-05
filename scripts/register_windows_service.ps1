@@ -1,34 +1,59 @@
-# PRAVISION — Windows Service / Scheduled Task Registration
-# Configures the PRAVISION Watchdog to run on boot / logon with automatic recovery
+# PRAVISION — Windows Automatic Startup & Service Registration
+# Supports:
+#   1. Elevated Administrator: Registers Scheduled Task with AtStartup (pre-logon) & AtLogOn.
+#   2. Standard User: Installs Startup Shortcut in User Programs Startup folder (runs on logon).
 
-$ErrorActionPreference = "Stop"
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $RootDir = Split-Path -Parent $ScriptDir
-$PythonExe = Join-Path $RootDir "venv\Scripts\python.exe"
-$WatchdogScript = Join-Path $RootDir "scripts\health_watchdog.py"
+$PythonExe = Join-Path $RootDir 'venv\Scripts\python.exe'
+$WatchdogScript = Join-Path $RootDir 'scripts\health_watchdog.py'
+$StartupFolder = [Environment]::GetFolderPath('Startup')
 
-Write-Host "=================================================================" -ForegroundColor Cyan
-Write-Host "PRAVISION — AUTOMATIC SERVICE REGISTRATION (WINDOWS)" -ForegroundColor Cyan
-Write-Host "=================================================================" -ForegroundColor Cyan
+Write-Host '=================================================================' -ForegroundColor Cyan
+Write-Host 'PRAVISION — PRODUCTION AUTO-STARTUP CONFIGURATION' -ForegroundColor Cyan
+Write-Host '=================================================================' -ForegroundColor Cyan
 
-$TaskName = "PRAVISION-Production-Daemon"
+$TaskName = 'PRAVISION-Production-Daemon'
+$IsAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 
-# Check if task already exists
-$ExistingTask = Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
-if ($ExistingTask) {
-    Write-Host "[*] Unregistering previous scheduled task '$TaskName'..." -ForegroundColor Yellow
-    Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false
+if ($IsAdmin) {
+    Write-Host '[*] Administrator privileges detected: Configuring Task Scheduler (Pre-Logon Boot)...' -ForegroundColor Green
+    $ExistingTask = Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
+    if ($ExistingTask) {
+        Write-Host "[*] Unregistering previous scheduled task '$TaskName'..." -ForegroundColor Yellow
+        Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false
+    }
+
+    $Action = New-ScheduledTaskAction -Execute $PythonExe -Argument "`"$WatchdogScript`"" -WorkingDirectory $RootDir
+    $Triggers = @(
+        (New-ScheduledTaskTrigger -AtStartup),
+        (New-ScheduledTaskTrigger -AtLogOn)
+    )
+    $Principal = New-ScheduledTaskPrincipal -UserId 'NT AUTHORITY\SYSTEM' -LogonType ServiceAccount -RunLevel Highest
+    $Settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1) -ExecutionTimeLimit (New-TimeSpan -Days 365)
+
+    Register-ScheduledTask -TaskName $TaskName -Action $Action -Trigger $Triggers -Settings $Settings -Principal $Principal -Description 'PRAVISION Universal Intelligence Platform Watchdog and Production Daemon' | Out-Null
+    Write-Host "[SUCCESS] Task '$TaskName' registered for boot startup (pre-logon execution active)." -ForegroundColor Green
+} else {
+    Write-Host '[*] Non-elevated session detected.' -ForegroundColor Yellow
+    Write-Host '    Windows security policy requires Administrator privileges for Task Scheduler / pre-logon boot services.' -ForegroundColor Yellow
+    Write-Host ('[*] Installing automatic startup shortcut in User Startup folder: ' + $StartupFolder) -ForegroundColor Cyan
+
+    $WshShell = New-Object -ComObject WScript.Shell
+    $ShortcutPath = Join-Path $StartupFolder 'PRAVISION-Production-Daemon.lnk'
+    $Shortcut = $WshShell.CreateShortcut($ShortcutPath)
+    $Shortcut.TargetPath = $PythonExe
+    $Shortcut.Arguments = "`"$WatchdogScript`""
+    $Shortcut.WorkingDirectory = $RootDir
+    $Shortcut.WindowStyle = 7 # Minimized
+    $Shortcut.Description = 'PRAVISION Production Health Supervisor'
+    $Shortcut.Save()
+
+    Write-Host "[SUCCESS] User Startup shortcut created successfully: $ShortcutPath" -ForegroundColor Green
+    Write-Host '  - Auto-start trigger: Runs automatically upon user logon (no UAC required)'
+    Write-Host '  - Execution mode: Minimized background watchdog'
+    Write-Host '  [NOTE] For pre-logon boot startup before interactive logon, open an elevated PowerShell prompt as Administrator and re-run this script.' -ForegroundColor Gray
 }
 
-$Action = New-ScheduledTaskAction -Execute $PythonExe -Argument "`"$WatchdogScript`"" -WorkingDirectory $RootDir
-$Trigger = New-ScheduledTaskTrigger -AtLogOn
-$Settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1) -ExecutionTimeLimit (New-TimeSpan -Days 365)
-
-Write-Host "[*] Registering task '$TaskName' to start on logon with automatic restart recovery..." -ForegroundColor Green
-Register-ScheduledTask -TaskName $TaskName -Action $Action -Trigger $Trigger -Settings $Settings -Description "PRAVISION Universal Intelligence Platform Watchdog & Production Daemon" | Out-Null
-
-Write-Host "[SUCCESS] Task '$TaskName' registered successfully." -ForegroundColor Green
 Write-Host "  - Command: $PythonExe $WatchdogScript"
-Write-Host "  - Auto-restart: Enabled (up to 3 retries every 1m)"
-Write-Host "  - Trigger: At user logon"
-Write-Host "=================================================================" -ForegroundColor Cyan
+Write-Host '=================================================================' -ForegroundColor Cyan

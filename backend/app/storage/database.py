@@ -1,9 +1,35 @@
 import os
 import asyncio
 import logging
+import socket
 import urllib.parse
 from pathlib import Path
 from typing import Dict, Any, AsyncGenerator
+
+# DNS Resilience Hook: Fallback to Cloudflare (1.1.1.1) and Google (8.8.8.8) when local ISP DNS fails
+try:
+    import dns.resolver
+    _orig_getaddrinfo = socket.getaddrinfo
+
+    def _hardened_getaddrinfo(host, port, family=0, type=0, proto=0, flags=0):
+        try:
+            return _orig_getaddrinfo(host, port, family, type, proto, flags)
+        except socket.gaierror as e:
+            if isinstance(host, str) and not host.replace('.', '').isdigit():
+                try:
+                    res = dns.resolver.Resolver()
+                    res.nameservers = ['1.1.1.1', '8.8.8.8']
+                    answers = res.resolve(host, 'A')
+                    first_ip = next(iter(answers)).to_text()
+                    return _orig_getaddrinfo(first_ip, port, family, type, proto, flags)
+                except Exception:
+                    pass
+            raise e
+
+    socket.getaddrinfo = _hardened_getaddrinfo
+except ImportError:
+    pass
+
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
 from sqlalchemy.orm import declarative_base
 from sqlalchemy import text
