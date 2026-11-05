@@ -415,8 +415,15 @@ class AuthService:
                 stmt = delete(IpLockoutModel).where(IpLockoutModel.ip_address == ip_address)
                 await session.execute(stmt)
                 await session.commit()
+        except HTTPException:
+            raise
         except Exception as e:
-            logger.warning(f"Database error clearing IP failure for {ip_address}: {e}")
+            corr_id = uuid.uuid4().hex[:8]
+            logger.error(f"[AUTH-DB-ERR-{corr_id}] Database failure clearing IP lockout for {ip_address}: {e}")
+            raise HTTPException(
+                status_code=503,
+                detail="Authentication service temporarily unavailable. Please retry in a few moments."
+            )
 
     async def authenticate_user(self, username_or_email: str, password: str, ip_address: str = "127.0.0.1") -> Dict[str, Any]:
         await self._check_ip_lockout(ip_address)

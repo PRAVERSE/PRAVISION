@@ -149,7 +149,7 @@ def test_mandatory_auth():
     log_test(11, "Revoked Token Rejection on Protected Route", post_code == 401, f"(HTTP {post_code}: {post_data.get('detail')})")
 
     # 12. Rate-Limiting & Lockout Verification (5 Failed Attempts -> 429 Lockout)
-    test_ip_headers = {"X-Forwarded-For": "198.51.100.42"}
+    test_ip_headers = {"CF-Connecting-IP": "198.51.100.42", "X-Forwarded-For": "198.51.100.42"}
     lockout_triggered = False
     for i in range(5):
         fc, fd, _, _ = req("POST", f"{LOCAL_API}/auth/login", data={"username": "lockout_test_user", "password": "wrong"}, headers=test_ip_headers)

@@ -422,7 +422,7 @@ async def run_all_tests():
     extracted_cf = _extract_client_ip(req_cf)
     log_test(12, "Authoritative CF-Connecting-IP Extracted Over Forged XFF", extracted_cf == "203.0.113.88", f"extracted={extracted_cf}")
 
-    # Case C: Validated proxy chain traversal without CF-Connecting-IP
+    # Case C: Untrusted XFF rejected when CF-Connecting-IP is missing
     req_xff = Request({
         "type": "http",
         "client": ("127.0.0.1", 8000),
@@ -431,7 +431,7 @@ async def run_all_tests():
         ]
     })
     extracted_xff = _extract_client_ip(req_xff)
-    log_test(12, "Right-to-Left Proxy Chain Traversal Extracts Real Client IP", extracted_xff == "203.0.113.88", f"extracted={extracted_xff}")
+    log_test(12, "Untrusted XFF Rejected When CF-Connecting-IP Missing (Falls Back to Peer)", extracted_xff == "127.0.0.1", f"extracted={extracted_xff}")
 
     # Case D: Malformed header rejection
     req_malformed = Request({

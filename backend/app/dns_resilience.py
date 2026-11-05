@@ -104,11 +104,17 @@ def resilient_getaddrinfo(
         try:
             resolved_ips = _resolve_with_public_dns(host, family)
             if resolved_ips:
-                first_ip = resolved_ips[0]
-                target_family = socket.AF_INET6 if ":" in first_ip else socket.AF_INET
-                # If caller requested a specific family, use it; otherwise use detected family
-                effective_family = family if family != 0 else target_family
-                return _orig_getaddrinfo(first_ip, port, effective_family, type, proto, flags)
+                results = []
+                for ip in resolved_ips:
+                    target_family = socket.AF_INET6 if ":" in ip else socket.AF_INET
+                    effective_family = family if family != 0 else target_family
+                    try:
+                        res = _orig_getaddrinfo(ip, port, effective_family, type, proto, flags)
+                        results.extend(res)
+                    except Exception:
+                        pass
+                if results:
+                    return results
         except Exception:
             pass
 

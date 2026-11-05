@@ -24,23 +24,21 @@ def _extract_client_ip(request: Request) -> str:
     """Extracts client IP with strict proxy trust validation.
     
     Security rules:
-    - Untrusted direct peers cannot provide forwarded headers.
-    - When connecting through trusted Cloudflare proxy infrastructure,
-      Cloudflare's 'CF-Connecting-IP' is authoritative and cryptographically tied to the edge connection.
-    - If CF-Connecting-IP is absent and request is from a trusted proxy, reconstruct and validate
-      the complete proxy chain from X-Forwarded-For: traverse right-to-left, skipping trusted proxies,
-      to find the first untrusted client IP.
-    - Validate syntax strictly via ipaddress.ip_address.
-    - Any malformed, spoofed, or unverified headers are rejected.
+    - Untrusted direct peers cannot provide forwarded headers; return peer directly.
+    - When connecting from a verified local proxy (TRUSTED_PROXIES):
+      Only trust Cloudflare's authoritative 'CF-Connecting-IP' header, cryptographically
+      tied to the edge connection.
+    - The CF-Connecting-IP must be validated as a valid IPv4 or IPv6 address.
+    - If CF-Connecting-IP is missing, empty, or malformed, arbitrary X-Forwarded-For
+      headers are NEVER trusted; safely fall back to the direct peer IP.
     """
     peer = request.client.host if request.client and request.client.host else "127.0.0.1"
     
-    # 1. Direct peer trust verification
+    # 1. Direct peer trust verification: untrusted peers cannot supply forwarded headers
     if peer not in TRUSTED_PROXIES:
-        # External direct connection: ignore any forwarded headers completely
         return peer
 
-    # 2. Authoritative Cloudflare Edge header (highest priority)
+    # 2. Authoritative Cloudflare Edge header from trusted proxy
     cf_ip = request.headers.get("CF-Connecting-IP") or request.headers.get("cf-connecting-ip")
     if cf_ip:
         candidate = cf_ip.strip()
@@ -51,32 +49,19 @@ def _extract_client_ip(request: Request) -> str:
             logger.warning(f"Malformed CF-Connecting-IP header rejected: {cf_ip}")
             return peer
 
-    # 3. Validated X-Forwarded-For traversal from trusted proxy
-    xff = request.headers.get("X-Forwarded-For") or request.headers.get("x-forwarded-for")
-    if xff:
-        parts = [p.strip() for p in xff.split(",") if p.strip()]
-        # Traverse from right to left (most recent proxy backwards)
-        for part in reversed(parts):
-            try:
-                parsed = ipaddress.ip_address(part)
-                parsed_str = str(parsed)
-                # Skip internal/trusted proxies in the chain
-                if parsed_str in TRUSTED_PROXIES:
-                    continue
-                # The first non-trusted IP from the right is the client connecting to the trusted proxy
-                return parsed_str
-            except ValueError:
-                logger.warning(f"Malformed IP in X-Forwarded-For rejected: {part}")
-                continue
-
+    # Untrusted/unverified XFF headers are discarded when CF-Connecting-IP is missing
     return peer
 
 @auth_router.post("/login")
-async def login(request: Request, response: Response, payload: Dict[str, str] = Body(...)):
-    username = str(payload.get("username") or payload.get("user") or payload.get("email") or "").strip()
-    password = str(payload.get("password") or "").strip()
-    if not username or not password:
+async def login(request: Request, response: Response, payload: Dict[str, Any] = Body(...)):
+    raw_username = payload.get("username") if "username" in payload else (payload.get("user") if "user" in payload else payload.get("email"))
+    raw_password = payload.get("password")
+    
+    if not isinstance(raw_username, str) or not raw_username.strip() or not isinstance(raw_password, str) or len(raw_password) == 0:
         raise HTTPException(status_code=400, detail="Username and password are required.")
+    
+    username = raw_username.strip()
+    password = raw_password  # Strict exact string preservation (no trimming, lowercasing, or mutation)
     
     client_ip = _extract_client_ip(request)
     result = await auth_service.authenticate_user(username, password, ip_address=client_ip)

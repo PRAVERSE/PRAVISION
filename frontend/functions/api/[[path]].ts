@@ -34,6 +34,29 @@ interface HeadersWithSetCookie extends Headers {
   getSetCookie?: () => string[];
 }
 
+function isValidIpv4(ip: string): boolean {
+  const parts = ip.split(".");
+  if (parts.length !== 4) return false;
+  for (const part of parts) {
+    if (!/^\d{1,3}$/.test(part)) return false;
+    const n = parseInt(part, 10);
+    if (n < 0 || n > 255) return false;
+    if (part.length > 1 && part.startsWith("0")) return false;
+  }
+  return true;
+}
+
+function isValidIpv6(ip: string): boolean {
+  const ipv6Regex = /^(([0-9a-fA-F]{1,4}:){7}[0-9a-fA-F]{1,4}|([0-9a-fA-F]{1,4}:){1,7}:|([0-9a-fA-F]{1,4}:){1,6}:[0-9a-fA-F]{1,4}|([0-9a-fA-F]{1,4}:){1,5}(:[0-9a-fA-F]{1,4}){1,2}|([0-9a-fA-F]{1,4}:){1,4}(:[0-9a-fA-F]{1,4}){1,3}|([0-9a-fA-F]{1,4}:){1,3}(:[0-9a-fA-F]{1,4}){1,4}|([0-9a-fA-F]{1,4}:){1,2}(:[0-9a-fA-F]{1,4}){1,5}|[0-9a-fA-F]{1,4}:((:[0-9a-fA-F]{1,4}){1,6})|:((:[0-9a-fA-F]{1,4}){1,7}|:))$/;
+  return ipv6Regex.test(ip);
+}
+
+function isValidIpAddress(ip: string): boolean {
+  if (!ip || typeof ip !== "string") return false;
+  const trimmed = ip.trim();
+  return isValidIpv4(trimmed) || isValidIpv6(trimmed);
+}
+
 export const onRequest: PagesFunction = async (context) => {
   const url = new URL(context.request.url);
   const origin = context.request.headers.get("Origin");
@@ -56,12 +79,20 @@ export const onRequest: PagesFunction = async (context) => {
   const vpcService = context.env.PRAVISION_BACKEND;
   const envBackendUrl = (context.env.PRAVISION_BACKEND_URL as string) || "";
 
-  // Copy incoming headers and guarantee authoritative Cloudflare edge client IP is preserved
+  // Copy incoming headers and validate authoritative Cloudflare edge client IP
   const headers = new Headers(context.request.headers);
-  const edgeClientIp = context.request.headers.get("CF-Connecting-IP") || context.request.headers.get("cf-connecting-ip");
-  if (edgeClientIp) {
+  const rawEdgeClientIp = context.request.headers.get("CF-Connecting-IP") || context.request.headers.get("cf-connecting-ip");
+  const edgeClientIp = rawEdgeClientIp ? rawEdgeClientIp.trim() : "";
+
+  if (edgeClientIp && isValidIpAddress(edgeClientIp)) {
     headers.set("CF-Connecting-IP", edgeClientIp);
     headers.set("X-Forwarded-For", edgeClientIp);
+  } else {
+    // Strip both headers completely so no untrusted visitor-supplied XFF reaches upstream
+    headers.delete("CF-Connecting-IP");
+    headers.delete("cf-connecting-ip");
+    headers.delete("X-Forwarded-For");
+    headers.delete("x-forwarded-for");
   }
   headers.set("X-Forwarded-Host", url.host);
   headers.set("X-Forwarded-Proto", url.protocol.replace(":", ""));

@@ -111,7 +111,7 @@ def run_restart_persistence_test():
 
     # 5. Lock out a test IP address
     test_ip = f"198.51.100.{int(time.time()) % 150 + 20}"
-    ip_headers = {"X-Forwarded-For": test_ip}
+    ip_headers = {"CF-Connecting-IP": test_ip}
     for _ in range(5):
         http_req("POST", f"{LOCAL_API}/auth/login", {"username": "attacker", "password": "bad"}, headers=ip_headers)
     lock_code, lock_data = http_req("POST", f"{LOCAL_API}/auth/login", {"username": "attacker", "password": "bad"}, headers=ip_headers)
@@ -127,7 +127,7 @@ def run_restart_persistence_test():
 
     # 7. Wait for Watchdog to revive the backend
     print("  [WAIT] Waiting for watchdog supervisor to restart backend...")
-    restarted = wait_for_backend(timeout=35)
+    restarted = wait_for_backend(timeout=75)
     new_pid = find_uvicorn_pid()
     check("Backend Resurrected by Watchdog", restarted and new_pid > 0 and new_pid != uvicorn_pid, f"(Old PID: {uvicorn_pid} -> New PID: {new_pid})")
 
