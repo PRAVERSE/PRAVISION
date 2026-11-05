@@ -8,18 +8,18 @@ import base64
 import hashlib
 import secrets
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Dict, Any, Optional, List, Tuple
 from pathlib import Path
 
 from fastapi import Depends, HTTPException, Security, Request, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
-from sqlalchemy import select, update, text
+from sqlalchemy import select, update, text, delete
 from sqlalchemy.orm import selectinload
 
 from app.config import WORKSPACE_DIR
 from app.storage.database import async_session_maker
-from app.storage.models_db import UserModel, CaseModel, CaseMembershipModel, RevokedTokenModel, AuditLogModel
+from app.storage.models_db import UserModel, CaseModel, CaseMembershipModel, RevokedTokenModel, IpLockoutModel, AuditLogModel
 
 logger = logging.getLogger("pravision.auth")
 
@@ -91,7 +91,7 @@ def create_jwt_token(
 ) -> str:
     """Generates an RFC-7519 compliant HMAC-SHA256 JWT token."""
     header = {"alg": "HS256", "typ": "JWT"}
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
     exp = now + (expires_delta or (timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES) if token_type == "access" else timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS)))
     
     payload = {
@@ -123,7 +123,7 @@ def decode_jwt_token(token: str) -> Dict[str, Any]:
     if not hmac.compare_digest(actual_sig, expected_sig):
         raise ValueError("JWT signature verification failed.")
     payload = json.loads(_b64url_decode(p_enc).decode("utf-8"))
-    if datetime.utcnow().timestamp() > payload.get("exp", 0):
+    if datetime.now(timezone.utc).timestamp() > payload.get("exp", 0):
         raise ValueError("Token has expired.")
     return payload
 
@@ -269,8 +269,9 @@ class AuthService:
     def __init__(self):
         self._ip_lockouts: Dict[str, Dict[str, Any]] = {}
 
-    def _check_ip_lockout(self, ip_address: str):
+    async def _check_ip_lockout(self, ip_address: str):
         now = datetime.utcnow()
+        # 1. Fast in-memory check
         ip_data = self._ip_lockouts.get(ip_address)
         if ip_data and ip_data.get("locked_until") and ip_data["locked_until"] > now:
             remaining_secs = int((ip_data["locked_until"] - now).total_seconds())
@@ -280,8 +281,41 @@ class AuthService:
                 detail=f"Too many failed login attempts. Access temporarily restricted for {mins} minute(s)."
             )
 
-    def _record_ip_failure(self, ip_address: str):
+        # 2. Shared persistent database check (survives restarts and shared across workers)
+        try:
+            async with async_session_maker() as session:
+                stmt = select(IpLockoutModel).where(IpLockoutModel.ip_address == ip_address)
+                res = await session.execute(stmt)
+                record = res.scalar_one_or_none()
+                if record:
+                    if record.locked_until and record.locked_until > now:
+                        self._ip_lockouts[ip_address] = {
+                            "count": record.failed_attempts,
+                            "locked_until": record.locked_until
+                        }
+                        remaining_secs = int((record.locked_until - now).total_seconds())
+                        mins = max(1, remaining_secs // 60)
+                        raise HTTPException(
+                            status_code=429,
+                            detail=f"Too many failed login attempts. Access temporarily restricted for {mins} minute(s)."
+                        )
+                    elif record.locked_until and record.locked_until <= now:
+                        record.locked_until = None
+                        record.failed_attempts = 0
+                        await session.commit()
+                        self._ip_lockouts.pop(ip_address, None)
+                    elif record.last_attempt_at < now - timedelta(minutes=LOCKOUT_DURATION_MINUTES):
+                        record.failed_attempts = 0
+                        await session.commit()
+                        self._ip_lockouts.pop(ip_address, None)
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.warning(f"Database error during IP lockout check for {ip_address}: {e}")
+
+    async def _record_ip_failure(self, ip_address: str):
         now = datetime.utcnow()
+        # Update in-memory cache
         ip_data = self._ip_lockouts.get(ip_address, {"count": 0, "locked_until": None})
         ip_data["count"] += 1
         if ip_data["count"] >= MAX_FAILED_ATTEMPTS:
@@ -289,11 +323,45 @@ class AuthService:
             logger.warning(f"IP address {ip_address} locked out for {LOCKOUT_DURATION_MINUTES}m after {ip_data['count']} failed login attempts.")
         self._ip_lockouts[ip_address] = ip_data
 
-    def _clear_ip_failure(self, ip_address: str):
+        # Update persistent shared database store
+        try:
+            async with async_session_maker() as session:
+                stmt = select(IpLockoutModel).where(IpLockoutModel.ip_address == ip_address)
+                res = await session.execute(stmt)
+                record = res.scalar_one_or_none()
+                if not record:
+                    record = IpLockoutModel(
+                        ip_address=ip_address,
+                        failed_attempts=1,
+                        last_attempt_at=now,
+                        locked_until=None
+                    )
+                    session.add(record)
+                else:
+                    if record.last_attempt_at < now - timedelta(minutes=LOCKOUT_DURATION_MINUTES):
+                        record.failed_attempts = 1
+                    else:
+                        record.failed_attempts += 1
+                    record.last_attempt_at = now
+                    if record.failed_attempts >= MAX_FAILED_ATTEMPTS:
+                        record.locked_until = now + timedelta(minutes=LOCKOUT_DURATION_MINUTES)
+                        logger.warning(f"[DB] IP address {ip_address} locked out for {LOCKOUT_DURATION_MINUTES}m after {record.failed_attempts} failed login attempts.")
+                await session.commit()
+        except Exception as e:
+            logger.warning(f"Database error recording IP failure for {ip_address}: {e}")
+
+    async def _clear_ip_failure(self, ip_address: str):
         self._ip_lockouts.pop(ip_address, None)
+        try:
+            async with async_session_maker() as session:
+                stmt = delete(IpLockoutModel).where(IpLockoutModel.ip_address == ip_address)
+                await session.execute(stmt)
+                await session.commit()
+        except Exception as e:
+            logger.warning(f"Database error clearing IP failure for {ip_address}: {e}")
 
     async def authenticate_user(self, username_or_email: str, password: str, ip_address: str = "127.0.0.1") -> Dict[str, Any]:
-        self._check_ip_lockout(ip_address)
+        await self._check_ip_lockout(ip_address)
 
         env_user, env_pwd, _ = get_env_auth_credentials()
         is_env_auth = False
@@ -360,7 +428,7 @@ class AuthService:
                         user.email = env_user
                     await session.commit()
 
-                self._clear_ip_failure(ip_address)
+                await self._clear_ip_failure(ip_address)
                 access_token = create_jwt_token(user.id, user.username, user.role, token_type="access")
                 refresh_token = create_jwt_token(user.id, user.username, user.role, token_type="refresh")
                 await self.record_audit("user_login", user.id, user.username, "auth", user.id, "success", {"role": user.role, "auth_source": "env"}, ip_address)
@@ -393,7 +461,7 @@ class AuthService:
             user = res.scalars().first()
 
             if not user:
-                self._record_ip_failure(ip_address)
+                await self._record_ip_failure(ip_address)
                 await self.record_audit("user_login", None, username_or_email, "auth", None, "failure", {"reason": "user_not_found"}, ip_address)
                 raise HTTPException(status_code=401, detail="Invalid username or password. Access denied.")
 
@@ -413,12 +481,12 @@ class AuthService:
                     user.locked_until = datetime.utcnow() + timedelta(minutes=LOCKOUT_DURATION_MINUTES)
                     logger.warning(f"User '{user.username}' locked out for {LOCKOUT_DURATION_MINUTES}m after {user.failed_login_attempts} failed attempts.")
                 await session.commit()
-                self._record_ip_failure(ip_address)
+                await self._record_ip_failure(ip_address)
                 await self.record_audit("user_login", user.id, user.username, "auth", user.id, "failure", {"reason": "invalid_password", "failed_count": user.failed_login_attempts}, ip_address)
                 raise HTTPException(status_code=401, detail="Invalid username or password. Access denied.")
 
             # Successful login: reset failed attempts on user and IP
-            self._clear_ip_failure(ip_address)
+            await self._clear_ip_failure(ip_address)
             user.failed_login_attempts = 0
             user.locked_until = None
             user.last_login = datetime.utcnow()
@@ -444,19 +512,58 @@ class AuthService:
             }
 
     async def revoke_token(self, jti: str, exp_timestamp: int):
+        exp_dt = datetime.fromtimestamp(exp_timestamp, tz=timezone.utc).replace(tzinfo=None)
         async with async_session_maker() as session:
             revoked = RevokedTokenModel(
                 token_jti=jti,
-                expires_at=datetime.utcfromtimestamp(exp_timestamp)
+                expires_at=exp_dt
             )
             session.add(revoked)
             await session.commit()
+        # Opportunistic cleanup of expired tokens
+        try:
+            await self.cleanup_expired_revoked_tokens()
+        except Exception:
+            pass
 
     async def is_token_revoked(self, jti: str) -> bool:
         async with async_session_maker() as session:
             stmt = select(RevokedTokenModel).where(RevokedTokenModel.token_jti == jti)
             res = await session.execute(stmt)
             return res.scalar_one_or_none() is not None
+
+    async def cleanup_expired_revoked_tokens(self) -> int:
+        """Purges expired token revocations from PostgreSQL to prevent unbounded table growth."""
+        try:
+            now = datetime.now(timezone.utc).replace(tzinfo=None)
+            async with async_session_maker() as session:
+                stmt = delete(RevokedTokenModel).where(RevokedTokenModel.expires_at < now)
+                res = await session.execute(stmt)
+                await session.commit()
+                deleted = res.rowcount if hasattr(res, "rowcount") else 0
+                if deleted:
+                    logger.info(f"Purged {deleted} expired revoked tokens from database.")
+                return deleted
+        except Exception as e:
+            logger.warning(f"Failed to purge expired revoked tokens: {e}")
+            return 0
+
+    async def cleanup_expired_ip_lockouts(self) -> int:
+        """Purges expired IP lockouts where last_attempt_at is older than lockout duration."""
+        try:
+            cutoff = datetime.utcnow() - timedelta(minutes=LOCKOUT_DURATION_MINUTES * 2)
+            async with async_session_maker() as session:
+                stmt = delete(IpLockoutModel).where(
+                    (IpLockoutModel.last_attempt_at < cutoff) &
+                    ((IpLockoutModel.locked_until == None) | (IpLockoutModel.locked_until < datetime.utcnow()))
+                )
+                res = await session.execute(stmt)
+                await session.commit()
+                deleted = res.rowcount if hasattr(res, "rowcount") else 0
+                return deleted
+        except Exception as e:
+            logger.warning(f"Failed to purge expired IP lockouts: {e}")
+            return 0
 
     async def create_user(
         self,

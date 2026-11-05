@@ -102,7 +102,7 @@ async def get_db_session() -> AsyncGenerator[AsyncSession, None]:
 async def init_db():
     """Initializes schema, migrations, and tables with resilient retry."""
     from app.storage.models_db import (
-        UserModel, CaseMembershipModel, RevokedTokenModel,
+        UserModel, CaseMembershipModel, RevokedTokenModel, IpLockoutModel,
         CaseModel, InvestigationModel, EntityModel, RelationshipModel, EvidenceModel, AuditLogModel,
         EntityMergeLogModel
     )

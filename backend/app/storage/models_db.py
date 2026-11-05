@@ -63,6 +63,15 @@ class RevokedTokenModel(Base):
     revoked_at = Column(DateTime, default=datetime.utcnow)
     expires_at = Column(DateTime, nullable=False, index=True)
 
+class IpLockoutModel(Base):
+    """Persistent IP-based authentication lockout and rate limiting model."""
+    __tablename__ = "ip_lockouts"
+
+    ip_address = Column(String(64), primary_key=True, index=True)
+    failed_attempts = Column(Integer, default=0, nullable=False)
+    locked_until = Column(DateTime, nullable=True, index=True)
+    last_attempt_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
 class CaseModel(Base):
     __tablename__ = "cases"
 

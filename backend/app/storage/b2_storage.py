@@ -8,29 +8,9 @@ from pathlib import Path
 from typing import Optional, Dict, Any, Tuple
 from datetime import datetime
 
-# DNS Resilience Hook: Fallback to Cloudflare (1.1.1.1) and Google (8.8.8.8) when local ISP DNS fails
-try:
-    import dns.resolver
-    _orig_getaddrinfo = socket.getaddrinfo
-
-    def _hardened_getaddrinfo(host, port, family=0, type=0, proto=0, flags=0):
-        try:
-            return _orig_getaddrinfo(host, port, family, type, proto, flags)
-        except socket.gaierror as e:
-            if isinstance(host, str) and not host.replace('.', '').isdigit():
-                try:
-                    res = dns.resolver.Resolver()
-                    res.nameservers = ['1.1.1.1', '8.8.8.8']
-                    answers = res.resolve(host, 'A')
-                    first_ip = next(iter(answers)).to_text()
-                    return _orig_getaddrinfo(first_ip, port, family, type, proto, flags)
-                except Exception:
-                    pass
-            raise e
-
-    socket.getaddrinfo = _hardened_getaddrinfo
-except ImportError:
-    pass
+# DNS Resilience Hook: Resilient fallback to public resolvers on ISP failure
+from app.dns_resilience import install_dns_resilience
+install_dns_resilience()
 
 from app.config import BASE_DIR, TEMP_DATA_DIR, VAULT_DATA_DIR
 
