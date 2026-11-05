@@ -267,21 +267,23 @@ class AuthService:
     """Manages authentication, RBAC authorizations, user lifecycles, and security auditing."""
 
     def __init__(self):
-        self._ip_lockouts: Dict[str, Dict[str, Any]] = {}
+        # In-memory transient read cache (strictly optional read-cache; PostgreSQL is authoritative)
+        self._ip_lockout_cache: Dict[str, Dict[str, Any]] = {}
 
     async def _check_ip_lockout(self, ip_address: str):
-        now = datetime.utcnow()
-        # 1. Fast in-memory check
-        ip_data = self._ip_lockouts.get(ip_address)
-        if ip_data and ip_data.get("locked_until") and ip_data["locked_until"] > now:
-            remaining_secs = int((ip_data["locked_until"] - now).total_seconds())
-            mins = max(1, remaining_secs // 60)
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
+        
+        # 1. Fast in-memory check (if active lockout in local cache)
+        cached = self._ip_lockout_cache.get(ip_address)
+        if cached and cached.get("locked_until") and cached["locked_until"] > now:
+            remaining_secs = int((cached["locked_until"] - now).total_seconds())
+            mins = max(1, (remaining_secs + 59) // 60)
             raise HTTPException(
                 status_code=429,
                 detail=f"Too many failed login attempts. Access temporarily restricted for {mins} minute(s)."
             )
 
-        # 2. Shared persistent database check (survives restarts and shared across workers)
+        # 2. Authoritative PostgreSQL check across all workers and restarts
         try:
             async with async_session_maker() as session:
                 stmt = select(IpLockoutModel).where(IpLockoutModel.ip_address == ip_address)
@@ -289,69 +291,142 @@ class AuthService:
                 record = res.scalar_one_or_none()
                 if record:
                     if record.locked_until and record.locked_until > now:
-                        self._ip_lockouts[ip_address] = {
+                        self._ip_lockout_cache[ip_address] = {
                             "count": record.failed_attempts,
                             "locked_until": record.locked_until
                         }
                         remaining_secs = int((record.locked_until - now).total_seconds())
-                        mins = max(1, remaining_secs // 60)
+                        mins = max(1, (remaining_secs + 59) // 60)
                         raise HTTPException(
                             status_code=429,
                             detail=f"Too many failed login attempts. Access temporarily restricted for {mins} minute(s)."
                         )
                     elif record.locked_until and record.locked_until <= now:
-                        record.locked_until = None
-                        record.failed_attempts = 0
+                        # Lockout has expired: reset locked_until and failed_attempts
+                        stmt_reset = (
+                            update(IpLockoutModel)
+                            .where(IpLockoutModel.ip_address == ip_address)
+                            .values(locked_until=None, failed_attempts=0)
+                        )
+                        await session.execute(stmt_reset)
                         await session.commit()
-                        self._ip_lockouts.pop(ip_address, None)
-                    elif record.last_attempt_at < now - timedelta(minutes=LOCKOUT_DURATION_MINUTES):
-                        record.failed_attempts = 0
+                        self._ip_lockout_cache.pop(ip_address, None)
+                    elif record.last_attempt_at < (now - timedelta(minutes=LOCKOUT_DURATION_MINUTES)):
+                        # Sliding window has expired
+                        stmt_reset = (
+                            update(IpLockoutModel)
+                            .where(IpLockoutModel.ip_address == ip_address)
+                            .values(failed_attempts=0)
+                        )
+                        await session.execute(stmt_reset)
                         await session.commit()
-                        self._ip_lockouts.pop(ip_address, None)
+                        self._ip_lockout_cache.pop(ip_address, None)
+                    else:
+                        self._ip_lockout_cache[ip_address] = {
+                            "count": record.failed_attempts,
+                            "locked_until": None
+                        }
         except HTTPException:
             raise
         except Exception as e:
-            logger.warning(f"Database error during IP lockout check for {ip_address}: {e}")
+            corr_id = uuid.uuid4().hex[:8]
+            logger.error(f"[AUTH-DB-ERR-{corr_id}] Database failure during IP lockout check for {ip_address}: {e}")
+            # Secure Failure Policy: Do not silently proceed through an unprotected fallback
+            raise HTTPException(
+                status_code=503,
+                detail="Authentication service temporarily unavailable. Please retry in a few moments."
+            )
 
     async def _record_ip_failure(self, ip_address: str):
-        now = datetime.utcnow()
-        # Update in-memory cache
-        ip_data = self._ip_lockouts.get(ip_address, {"count": 0, "locked_until": None})
-        ip_data["count"] += 1
-        if ip_data["count"] >= MAX_FAILED_ATTEMPTS:
-            ip_data["locked_until"] = now + timedelta(minutes=LOCKOUT_DURATION_MINUTES)
-            logger.warning(f"IP address {ip_address} locked out for {LOCKOUT_DURATION_MINUTES}m after {ip_data['count']} failed login attempts.")
-        self._ip_lockouts[ip_address] = ip_data
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
+        cutoff = now - timedelta(minutes=LOCKOUT_DURATION_MINUTES)
+        from app.storage.database import IS_POSTGRES
 
-        # Update persistent shared database store
         try:
             async with async_session_maker() as session:
-                stmt = select(IpLockoutModel).where(IpLockoutModel.ip_address == ip_address)
-                res = await session.execute(stmt)
-                record = res.scalar_one_or_none()
-                if not record:
-                    record = IpLockoutModel(
-                        ip_address=ip_address,
-                        failed_attempts=1,
-                        last_attempt_at=now,
-                        locked_until=None
-                    )
-                    session.add(record)
+                if IS_POSTGRES:
+                    upsert_sql = text("""
+                        INSERT INTO ip_lockouts (ip_address, failed_attempts, last_attempt_at, locked_until)
+                        VALUES (:ip, 1, :now, NULL)
+                        ON CONFLICT (ip_address) DO UPDATE SET
+                            failed_attempts = CASE
+                                WHEN ip_lockouts.last_attempt_at < :cutoff THEN 1
+                                ELSE ip_lockouts.failed_attempts + 1
+                            END,
+                            locked_until = CASE
+                                WHEN (CASE WHEN ip_lockouts.last_attempt_at < :cutoff THEN 1 ELSE ip_lockouts.failed_attempts + 1 END) >= :max_attempts
+                                THEN :now + (:lock_mins || ' minutes')::interval
+                                ELSE ip_lockouts.locked_until
+                            END,
+                            last_attempt_at = :now
+                        RETURNING failed_attempts, locked_until;
+                    """)
+                    res = await session.execute(upsert_sql, {
+                        "ip": ip_address,
+                        "now": now,
+                        "cutoff": cutoff,
+                        "max_attempts": MAX_FAILED_ATTEMPTS,
+                        "lock_mins": str(LOCKOUT_DURATION_MINUTES)
+                    })
+                    await session.commit()
+                    row = res.fetchone()
+                    if row:
+                        count, locked_until = row[0], row[1]
+                        self._ip_lockout_cache[ip_address] = {"count": count, "locked_until": locked_until}
+                        if locked_until:
+                            logger.warning(f"[DB] IP address {ip_address} locked out for {LOCKOUT_DURATION_MINUTES}m after {count} failed login attempts.")
+                            raise HTTPException(
+                                status_code=429,
+                                detail=f"Too many failed login attempts. Access temporarily restricted for {LOCKOUT_DURATION_MINUTES} minute(s)."
+                            )
                 else:
-                    if record.last_attempt_at < now - timedelta(minutes=LOCKOUT_DURATION_MINUTES):
-                        record.failed_attempts = 1
-                    else:
-                        record.failed_attempts += 1
-                    record.last_attempt_at = now
-                    if record.failed_attempts >= MAX_FAILED_ATTEMPTS:
-                        record.locked_until = now + timedelta(minutes=LOCKOUT_DURATION_MINUTES)
-                        logger.warning(f"[DB] IP address {ip_address} locked out for {LOCKOUT_DURATION_MINUTES}m after {record.failed_attempts} failed login attempts.")
-                await session.commit()
+                    sqlite_sql = text("""
+                        INSERT INTO ip_lockouts (ip_address, failed_attempts, last_attempt_at, locked_until)
+                        VALUES (:ip, 1, :now, NULL)
+                        ON CONFLICT (ip_address) DO UPDATE SET
+                            failed_attempts = CASE
+                                WHEN ip_lockouts.last_attempt_at < :cutoff THEN 1
+                                ELSE ip_lockouts.failed_attempts + 1
+                            END,
+                            locked_until = CASE
+                                WHEN (CASE WHEN ip_lockouts.last_attempt_at < :cutoff THEN 1 ELSE ip_lockouts.failed_attempts + 1 END) >= :max_attempts
+                                THEN datetime(:now, '+' || :lock_mins || ' minutes')
+                                ELSE ip_lockouts.locked_until
+                            END,
+                            last_attempt_at = :now
+                        RETURNING failed_attempts, locked_until;
+                    """)
+                    res = await session.execute(sqlite_sql, {
+                        "ip": ip_address,
+                        "now": now,
+                        "cutoff": cutoff,
+                        "max_attempts": MAX_FAILED_ATTEMPTS,
+                        "lock_mins": str(LOCKOUT_DURATION_MINUTES)
+                    })
+                    await session.commit()
+                    row = res.fetchone()
+                    if row:
+                        count, locked_until = row[0], row[1]
+                        self._ip_lockout_cache[ip_address] = {"count": count, "locked_until": locked_until}
+                        if locked_until:
+                            logger.warning(f"[DB] IP address {ip_address} locked out for {LOCKOUT_DURATION_MINUTES}m after {count} failed login attempts.")
+                            raise HTTPException(
+                                status_code=429,
+                                detail=f"Too many failed login attempts. Access temporarily restricted for {LOCKOUT_DURATION_MINUTES} minute(s)."
+                            )
+        except HTTPException:
+            raise
         except Exception as e:
-            logger.warning(f"Database error recording IP failure for {ip_address}: {e}")
+            corr_id = uuid.uuid4().hex[:8]
+            logger.error(f"[AUTH-DB-ERR-{corr_id}] Database failure recording IP failure for {ip_address}: {e}")
+            # Secure Failure Policy: Do not silently proceed through an unprotected fallback
+            raise HTTPException(
+                status_code=503,
+                detail="Authentication service temporarily unavailable. Please retry in a few moments."
+            )
 
     async def _clear_ip_failure(self, ip_address: str):
-        self._ip_lockouts.pop(ip_address, None)
+        self._ip_lockout_cache.pop(ip_address, None)
         try:
             async with async_session_maker() as session:
                 stmt = delete(IpLockoutModel).where(IpLockoutModel.ip_address == ip_address)
@@ -513,13 +588,21 @@ class AuthService:
 
     async def revoke_token(self, jti: str, exp_timestamp: int):
         exp_dt = datetime.fromtimestamp(exp_timestamp, tz=timezone.utc).replace(tzinfo=None)
-        async with async_session_maker() as session:
-            revoked = RevokedTokenModel(
-                token_jti=jti,
-                expires_at=exp_dt
+        try:
+            async with async_session_maker() as session:
+                revoked = RevokedTokenModel(
+                    token_jti=jti,
+                    expires_at=exp_dt
+                )
+                session.add(revoked)
+                await session.commit()
+        except Exception as e:
+            logger.error(f"Database error writing token revocation for JTI {jti}: {e}")
+            raise HTTPException(
+                status_code=503,
+                detail="Failed to record session revocation."
             )
-            session.add(revoked)
-            await session.commit()
+
         # Opportunistic cleanup of expired tokens
         try:
             await self.cleanup_expired_revoked_tokens()
@@ -527,10 +610,17 @@ class AuthService:
             pass
 
     async def is_token_revoked(self, jti: str) -> bool:
-        async with async_session_maker() as session:
-            stmt = select(RevokedTokenModel).where(RevokedTokenModel.token_jti == jti)
-            res = await session.execute(stmt)
-            return res.scalar_one_or_none() is not None
+        try:
+            async with async_session_maker() as session:
+                stmt = select(RevokedTokenModel).where(RevokedTokenModel.token_jti == jti)
+                res = await session.execute(stmt)
+                return res.scalar_one_or_none() is not None
+        except Exception as e:
+            logger.error(f"Database error during token revocation verification: {e}")
+            raise HTTPException(
+                status_code=503,
+                detail="Authentication verification service temporarily unavailable."
+            )
 
     async def cleanup_expired_revoked_tokens(self) -> int:
         """Purges expired token revocations from PostgreSQL to prevent unbounded table growth."""
@@ -551,11 +641,12 @@ class AuthService:
     async def cleanup_expired_ip_lockouts(self) -> int:
         """Purges expired IP lockouts where last_attempt_at is older than lockout duration."""
         try:
-            cutoff = datetime.utcnow() - timedelta(minutes=LOCKOUT_DURATION_MINUTES * 2)
+            now = datetime.now(timezone.utc).replace(tzinfo=None)
+            cutoff = now - timedelta(minutes=LOCKOUT_DURATION_MINUTES * 2)
             async with async_session_maker() as session:
                 stmt = delete(IpLockoutModel).where(
                     (IpLockoutModel.last_attempt_at < cutoff) &
-                    ((IpLockoutModel.locked_until == None) | (IpLockoutModel.locked_until < datetime.utcnow()))
+                    ((IpLockoutModel.locked_until == None) | (IpLockoutModel.locked_until < now))
                 )
                 res = await session.execute(stmt)
                 await session.commit()

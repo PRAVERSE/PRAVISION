@@ -1,4 +1,5 @@
 import logging
+import ipaddress
 from typing import Dict, Any, List, Optional
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status, Body
 
@@ -17,14 +18,45 @@ from sqlalchemy import select, delete
 logger = logging.getLogger("pravision.api.auth")
 auth_router = APIRouter(prefix="/auth", tags=["Authentication & Access Control"])
 
+TRUSTED_PROXIES = {"127.0.0.1", "::1", "localhost", "testclient"}
+
 def _extract_client_ip(request: Request) -> str:
+    """Extracts client IP with strict proxy trust validation.
+    
+    Security rules:
+    - Never trust forwarded headers from untrusted direct peers.
+    - Cloudflare 'CF-Connecting-IP' is authoritative when connecting through local Cloudflare Tunnel.
+    - 'X-Forwarded-For' is evaluated only from trusted local proxy infrastructure.
+    - Malformed or spoofed IP strings are strictly rejected, falling back to peer IP.
+    """
+    peer = request.client.host if request.client and request.client.host else "127.0.0.1"
+    
+    # If peer is not trusted local proxy infrastructure, ignore all forwarded headers completely
+    if peer not in TRUSTED_PROXIES:
+        return peer
+
+    # 1. Cloudflare edge header (highest priority, set by Cloudflare CDN edge)
     cf_ip = request.headers.get("CF-Connecting-IP")
     if cf_ip:
-        return cf_ip.strip()
+        candidate = cf_ip.strip()
+        try:
+            ipaddress.ip_address(candidate)
+            return candidate
+        except ValueError:
+            logger.warning(f"Malformed CF-Connecting-IP header rejected: {cf_ip}")
+
+    # 2. X-Forwarded-For header from trusted local proxy
     xff = request.headers.get("X-Forwarded-For")
     if xff:
-        return xff.split(",")[0].strip()
-    return request.client.host if request.client else "127.0.0.1"
+        parts = [p.strip() for p in xff.split(",") if p.strip()]
+        for part in parts:
+            try:
+                ipaddress.ip_address(part)
+                return part
+            except ValueError:
+                continue
+
+    return peer
 
 @auth_router.post("/login")
 async def login(request: Request, response: Response, payload: Dict[str, str] = Body(...)):
@@ -49,7 +81,12 @@ async def login(request: Request, response: Response, payload: Dict[str, str] = 
     return result
 
 @auth_router.post("/logout")
-async def logout(request: Request, response: Response, current_user: UserModel = Depends(get_current_user)):
+async def logout(
+    request: Request,
+    response: Response,
+    current_user: UserModel = Depends(get_current_user),
+    payload: Optional[Dict[str, str]] = Body(None)
+):
     token = None
     auth_header = request.headers.get("Authorization", "")
     if auth_header.startswith("Bearer "):
@@ -61,17 +98,30 @@ async def logout(request: Request, response: Response, current_user: UserModel =
 
     if token:
         try:
-            payload = decode_jwt_token(token)
-            jti = payload.get("jti")
-            exp = payload.get("exp", 0)
+            p = decode_jwt_token(token)
+            jti = p.get("jti")
+            exp = p.get("exp", 0)
             if jti:
                 await auth_service.revoke_token(jti, exp)
+        except Exception:
+            pass
+
+    # Revoke refresh token if supplied in payload or cookies
+    refresh_token = (payload.get("refresh_token") if payload else None) or request.cookies.get("pravision_refresh_token")
+    if refresh_token:
+        try:
+            rp = decode_jwt_token(refresh_token)
+            rjti = rp.get("jti")
+            rexp = rp.get("exp", 0)
+            if rjti:
+                await auth_service.revoke_token(rjti, rexp)
         except Exception:
             pass
 
     # Clear session cookies
     response.delete_cookie(key="pravision_session", path="/", httponly=True, secure=True, samesite="lax")
     response.delete_cookie(key="pravision_token", path="/", httponly=True, secure=True, samesite="lax")
+    response.delete_cookie(key="pravision_refresh_token", path="/", httponly=True, secure=True, samesite="lax")
 
     client_ip = _extract_client_ip(request)
     await auth_service.record_audit("user_logout", current_user.id, current_user.username, "auth", current_user.id, "success", {}, client_ip)
@@ -128,6 +178,8 @@ async def refresh_access_token(payload: Dict[str, str] = Body(...)):
             "token_type": "bearer",
             "expires_in": 3600
         }
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=401, detail=f"Invalid refresh token: {e}")
 

@@ -56,8 +56,12 @@ export const onRequest: PagesFunction = async (context) => {
   const vpcService = context.env.PRAVISION_BACKEND;
   const envBackendUrl = (context.env.PRAVISION_BACKEND_URL as string) || "";
 
-  // Copy incoming headers
+  // Copy incoming headers and guarantee authoritative Cloudflare edge client IP is preserved
   const headers = new Headers(context.request.headers);
+  const edgeClientIp = context.request.headers.get("CF-Connecting-IP");
+  if (edgeClientIp) {
+    headers.set("CF-Connecting-IP", edgeClientIp);
+  }
   headers.set("X-Forwarded-Host", url.host);
   headers.set("X-Forwarded-Proto", url.protocol.replace(":", ""));
 

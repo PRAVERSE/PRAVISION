@@ -137,8 +137,12 @@ class MandatoryAuthMiddleware(BaseHTTPMiddleware):
             jti = payload.get("jti")
             if jti and await auth_service.is_token_revoked(jti):
                 return JSONResponse(status_code=401, content={"detail": "Session has been invalidated. Please log in again."})
+        except HTTPException as he:
+            if he.status_code == 503:
+                return JSONResponse(status_code=503, content={"detail": "Authentication verification service temporarily unavailable."})
+            return JSONResponse(status_code=401, content={"detail": "Invalid or expired session credentials."})
         except Exception as e:
-            return JSONResponse(status_code=401, content={"detail": f"Invalid or expired session credentials: {str(e)}"})
+            return JSONResponse(status_code=401, content={"detail": "Invalid or expired session credentials."})
 
         return await call_next(request)
 

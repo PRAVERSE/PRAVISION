@@ -110,7 +110,7 @@ def run_restart_persistence_test():
     check("Pre-Restart Immediate Rejection of Revoked Token", rej_code == 401)
 
     # 5. Lock out a test IP address
-    test_ip = "198.51.100.88"
+    test_ip = f"198.51.100.{int(time.time()) % 150 + 20}"
     ip_headers = {"X-Forwarded-For": test_ip}
     for _ in range(5):
         http_req("POST", f"{LOCAL_API}/auth/login", {"username": "attacker", "password": "bad"}, headers=ip_headers)

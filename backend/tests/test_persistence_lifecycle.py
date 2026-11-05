@@ -119,14 +119,18 @@ async def run_lifecycle_tests():
         check("Pre-Threshold Check (4 failures): No Lockout", False, "Premature lockout")
 
     # 5th failure triggers lockout
-    await auth_service._record_ip_failure(test_ip)
+    try:
+        await auth_service._record_ip_failure(test_ip)
+    except HTTPException:
+        pass
 
     # Verify database record in PostgreSQL
+    now_utc = datetime.now(timezone.utc).replace(tzinfo=None)
     async with async_session_maker() as session:
         stmt = select(IpLockoutModel).where(IpLockoutModel.ip_address == test_ip)
         rec = (await session.execute(stmt)).scalar_one_or_none()
         check("PostgreSQL IpLockoutModel Row Created", rec is not None and rec.failed_attempts == 5)
-        check("PostgreSQL locked_until Populated", rec is not None and rec.locked_until is not None and rec.locked_until > datetime.utcnow())
+        check("PostgreSQL locked_until Populated", rec is not None and rec.locked_until is not None and rec.locked_until > now_utc)
 
     # Verify _check_ip_lockout raises HTTP 429
     raised_429 = False
@@ -137,9 +141,9 @@ async def run_lifecycle_tests():
             raised_429 = True
     check("IP Lockout Enforced with HTTP 429", raised_429)
 
-    # Test restart simulation: clear in-memory dictionary, check if DB state enforces 429!
-    auth_service._ip_lockouts.clear()
-    check("In-Memory State Cleared (Simulating Process Restart)", len(auth_service._ip_lockouts) == 0)
+    # Test restart simulation: clear in-memory cache, check if DB state enforces 429!
+    auth_service._ip_lockout_cache.clear()
+    check("In-Memory State Cleared (Simulating Process Restart)", len(auth_service._ip_lockout_cache) == 0)
 
     raised_429_post_restart = False
     try:
