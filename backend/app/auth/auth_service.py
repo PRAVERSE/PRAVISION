@@ -267,23 +267,17 @@ class AuthService:
     """Manages authentication, RBAC authorizations, user lifecycles, and security auditing."""
 
     def __init__(self):
-        # In-memory transient read cache (strictly optional read-cache; PostgreSQL is authoritative)
+        # Optional debug registry; PostgreSQL is the sole authoritative store across all workers
         self._ip_lockout_cache: Dict[str, Dict[str, Any]] = {}
 
     async def _check_ip_lockout(self, ip_address: str):
-        now = datetime.now(timezone.utc).replace(tzinfo=None)
+        """Authoritative PostgreSQL check across all workers and restarts.
         
-        # 1. Fast in-memory check (if active lockout in local cache)
-        cached = self._ip_lockout_cache.get(ip_address)
-        if cached and cached.get("locked_until") and cached["locked_until"] > now:
-            remaining_secs = int((cached["locked_until"] - now).total_seconds())
-            mins = max(1, (remaining_secs + 59) // 60)
-            raise HTTPException(
-                status_code=429,
-                detail=f"Too many failed login attempts. Access temporarily restricted for {mins} minute(s)."
-            )
+        Zero in-memory caching ensures 100% strict consistency across all workers.
+        Lockout decisions are always evaluated directly from PostgreSQL.
+        """
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
 
-        # 2. Authoritative PostgreSQL check across all workers and restarts
         try:
             async with async_session_maker() as session:
                 stmt = select(IpLockoutModel).where(IpLockoutModel.ip_address == ip_address)
@@ -291,10 +285,6 @@ class AuthService:
                 record = res.scalar_one_or_none()
                 if record:
                     if record.locked_until and record.locked_until > now:
-                        self._ip_lockout_cache[ip_address] = {
-                            "count": record.failed_attempts,
-                            "locked_until": record.locked_until
-                        }
                         remaining_secs = int((record.locked_until - now).total_seconds())
                         mins = max(1, (remaining_secs + 59) // 60)
                         raise HTTPException(
@@ -310,7 +300,6 @@ class AuthService:
                         )
                         await session.execute(stmt_reset)
                         await session.commit()
-                        self._ip_lockout_cache.pop(ip_address, None)
                     elif record.last_attempt_at < (now - timedelta(minutes=LOCKOUT_DURATION_MINUTES)):
                         # Sliding window has expired
                         stmt_reset = (
@@ -320,18 +309,12 @@ class AuthService:
                         )
                         await session.execute(stmt_reset)
                         await session.commit()
-                        self._ip_lockout_cache.pop(ip_address, None)
-                    else:
-                        self._ip_lockout_cache[ip_address] = {
-                            "count": record.failed_attempts,
-                            "locked_until": None
-                        }
         except HTTPException:
             raise
         except Exception as e:
             corr_id = uuid.uuid4().hex[:8]
             logger.error(f"[AUTH-DB-ERR-{corr_id}] Database failure during IP lockout check for {ip_address}: {e}")
-            # Secure Failure Policy: Do not silently proceed through an unprotected fallback
+            # Secure Failure Policy: Fail-secure with HTTP 503
             raise HTTPException(
                 status_code=503,
                 detail="Authentication service temporarily unavailable. Please retry in a few moments."
@@ -586,28 +569,65 @@ class AuthService:
                 }
             }
 
-    async def revoke_token(self, jti: str, exp_timestamp: int):
-        exp_dt = datetime.fromtimestamp(exp_timestamp, tz=timezone.utc).replace(tzinfo=None)
+    async def revoke_tokens(self, tokens_to_revoke: List[Tuple[str, int]]):
+        """Atomically revokes multiple tokens (e.g. access and refresh tokens) in a single transaction.
+        
+        Ensures all-or-nothing revocation semantics: if any token cannot be revoked
+        (e.g. database down), the transaction rolls back, neither token is marked as revoked,
+        and an HTTP 503 is raised.
+        
+        Idempotency:
+            Uses ON CONFLICT (token_jti) DO NOTHING so repeated calls succeed cleanly
+            without duplicate key errors.
+        """
+        if not tokens_to_revoke:
+            return
+
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
+        from app.storage.database import IS_POSTGRES
+
         try:
             async with async_session_maker() as session:
-                revoked = RevokedTokenModel(
-                    token_jti=jti,
-                    expires_at=exp_dt
-                )
-                session.add(revoked)
+                for jti, exp_timestamp in tokens_to_revoke:
+                    exp_dt = datetime.fromtimestamp(exp_timestamp, tz=timezone.utc).replace(tzinfo=None)
+                    if IS_POSTGRES:
+                        from sqlalchemy.dialects.postgresql import insert as pg_insert
+                        stmt = pg_insert(RevokedTokenModel).values(
+                            id=str(uuid.uuid4()),
+                            token_jti=jti,
+                            revoked_at=now,
+                            expires_at=exp_dt
+                        ).on_conflict_do_nothing(index_elements=["token_jti"])
+                        await session.execute(stmt)
+                    else:
+                        existing = (await session.execute(select(RevokedTokenModel).where(RevokedTokenModel.token_jti == jti))).scalar_one_or_none()
+                        if not existing:
+                            revoked = RevokedTokenModel(
+                                id=str(uuid.uuid4()),
+                                token_jti=jti,
+                                revoked_at=now,
+                                expires_at=exp_dt
+                            )
+                            session.add(revoked)
                 await session.commit()
+        except HTTPException:
+            raise
         except Exception as e:
-            logger.error(f"Database error writing token revocation for JTI {jti}: {e}")
+            corr_id = uuid.uuid4().hex[:8]
+            logger.error(f"[AUTH-REVOKE-ERR-{corr_id}] Database transaction failed revoking tokens: {e}")
             raise HTTPException(
                 status_code=503,
-                detail="Failed to record session revocation."
+                detail="Authentication service temporarily unavailable. Failed to record session revocation."
             )
 
-        # Opportunistic cleanup of expired tokens
+        # Opportunistic cleanup of expired tokens (non-blocking)
         try:
             await self.cleanup_expired_revoked_tokens()
         except Exception:
             pass
+
+    async def revoke_token(self, jti: str, exp_timestamp: int):
+        await self.revoke_tokens([(jti, exp_timestamp)])
 
     async def is_token_revoked(self, jti: str) -> bool:
         try:

@@ -108,12 +108,14 @@ async def init_db():
     )
     for attempt in range(1, 4):
         try:
-            async with engine.begin() as conn:
+            async with engine.connect() as conn:
                 if not IS_POSTGRES:
                     # Enable WAL mode for high performance SQLite concurrency
                     await conn.execute(text("PRAGMA journal_mode=WAL;"))
                     await conn.execute(text("PRAGMA foreign_keys=ON;"))
+                    await conn.commit()
                 await conn.run_sync(Base.metadata.create_all)
+                await conn.commit()
 
                 # Idempotent column migrations for existing instances
                 if IS_POSTGRES:
@@ -136,7 +138,9 @@ async def init_db():
                     for sql in migrations:
                         try:
                             await conn.execute(text(sql))
+                            await conn.commit()
                         except Exception as e:
+                            await conn.rollback()
                             logger.debug(f"Postgres column migration note: {e}")
                 else:
                     sqlite_migrations = [
@@ -158,12 +162,14 @@ async def init_db():
                     for query in sqlite_migrations:
                         try:
                             await conn.execute(text(query))
+                            await conn.commit()
                         except Exception:
-                            pass
+                            await conn.rollback()
             backend_name = "Neon Lakebase Postgres" if IS_NEON else ("PostgreSQL" if IS_POSTGRES else "Local SQLite (WAL)")
             logger.info(f"Database initialized successfully on {backend_name}")
             return
         except Exception as e:
+            await engine.dispose()
             if attempt == 3:
                 raise
             logger.warning(f"Database initialization attempt {attempt} failed ({e}), retrying in 1s...")

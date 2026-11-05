@@ -24,36 +24,49 @@ def _extract_client_ip(request: Request) -> str:
     """Extracts client IP with strict proxy trust validation.
     
     Security rules:
-    - Never trust forwarded headers from untrusted direct peers.
-    - Cloudflare 'CF-Connecting-IP' is authoritative when connecting through local Cloudflare Tunnel.
-    - 'X-Forwarded-For' is evaluated only from trusted local proxy infrastructure.
-    - Malformed or spoofed IP strings are strictly rejected, falling back to peer IP.
+    - Untrusted direct peers cannot provide forwarded headers.
+    - When connecting through trusted Cloudflare proxy infrastructure,
+      Cloudflare's 'CF-Connecting-IP' is authoritative and cryptographically tied to the edge connection.
+    - If CF-Connecting-IP is absent and request is from a trusted proxy, reconstruct and validate
+      the complete proxy chain from X-Forwarded-For: traverse right-to-left, skipping trusted proxies,
+      to find the first untrusted client IP.
+    - Validate syntax strictly via ipaddress.ip_address.
+    - Any malformed, spoofed, or unverified headers are rejected.
     """
     peer = request.client.host if request.client and request.client.host else "127.0.0.1"
     
-    # If peer is not trusted local proxy infrastructure, ignore all forwarded headers completely
+    # 1. Direct peer trust verification
     if peer not in TRUSTED_PROXIES:
+        # External direct connection: ignore any forwarded headers completely
         return peer
 
-    # 1. Cloudflare edge header (highest priority, set by Cloudflare CDN edge)
-    cf_ip = request.headers.get("CF-Connecting-IP")
+    # 2. Authoritative Cloudflare Edge header (highest priority)
+    cf_ip = request.headers.get("CF-Connecting-IP") or request.headers.get("cf-connecting-ip")
     if cf_ip:
         candidate = cf_ip.strip()
         try:
-            ipaddress.ip_address(candidate)
-            return candidate
+            parsed = ipaddress.ip_address(candidate)
+            return str(parsed)
         except ValueError:
             logger.warning(f"Malformed CF-Connecting-IP header rejected: {cf_ip}")
+            return peer
 
-    # 2. X-Forwarded-For header from trusted local proxy
-    xff = request.headers.get("X-Forwarded-For")
+    # 3. Validated X-Forwarded-For traversal from trusted proxy
+    xff = request.headers.get("X-Forwarded-For") or request.headers.get("x-forwarded-for")
     if xff:
         parts = [p.strip() for p in xff.split(",") if p.strip()]
-        for part in parts:
+        # Traverse from right to left (most recent proxy backwards)
+        for part in reversed(parts):
             try:
-                ipaddress.ip_address(part)
-                return part
+                parsed = ipaddress.ip_address(part)
+                parsed_str = str(parsed)
+                # Skip internal/trusted proxies in the chain
+                if parsed_str in TRUSTED_PROXIES:
+                    continue
+                # The first non-trusted IP from the right is the client connecting to the trusted proxy
+                return parsed_str
             except ValueError:
+                logger.warning(f"Malformed IP in X-Forwarded-For rejected: {part}")
                 continue
 
     return peer
@@ -84,9 +97,23 @@ async def login(request: Request, response: Response, payload: Dict[str, str] = 
 async def logout(
     request: Request,
     response: Response,
-    current_user: UserModel = Depends(get_current_user),
     payload: Optional[Dict[str, str]] = Body(None)
 ):
+    """Invalidates active user sessions by revoking access and refresh tokens.
+    
+    Logout Failure Policy:
+    - If any required server-side token revocation fails (e.g. database connection down),
+      the endpoint strictly returns HTTP 503 ("Authentication service temporarily unavailable").
+    - Cookies are NOT deleted on failure, allowing safe client retries.
+    - Repeated/retried logout requests are idempotent: tokens already revoked do not cause
+      duplicate key errors.
+    - On successful commit of all server-side revocations, cookies are deleted and HTTP 200 is returned.
+    """
+    tokens_to_revoke = []
+    user_id = None
+    username = "unknown"
+
+    # 1. Extract and decode access token (from Authorization header or session cookies)
     token = None
     auth_header = request.headers.get("Authorization", "")
     if auth_header.startswith("Bearer "):
@@ -101,30 +128,53 @@ async def logout(
             p = decode_jwt_token(token)
             jti = p.get("jti")
             exp = p.get("exp", 0)
-            if jti:
-                await auth_service.revoke_token(jti, exp)
-        except Exception:
-            pass
+            user_id = p.get("sub")
+            username = p.get("username", username)
+            if jti and exp:
+                tokens_to_revoke.append((jti, exp))
+        except Exception as e:
+            logger.warning(f"Failed to decode access token on logout: {e}")
 
-    # Revoke refresh token if supplied in payload or cookies
-    refresh_token = (payload.get("refresh_token") if payload else None) or request.cookies.get("pravision_refresh_token")
+    # 2. Extract and decode refresh token (from JSON body or cookies)
+    refresh_token = (payload.get("refresh_token") if (payload and isinstance(payload, dict)) else None) or request.cookies.get("pravision_refresh_token")
     if refresh_token:
         try:
             rp = decode_jwt_token(refresh_token)
             rjti = rp.get("jti")
             rexp = rp.get("exp", 0)
-            if rjti:
-                await auth_service.revoke_token(rjti, rexp)
-        except Exception:
-            pass
+            if not user_id:
+                user_id = rp.get("sub")
+                username = rp.get("username", username)
+            if rjti and rexp:
+                tokens_to_revoke.append((rjti, rexp))
+        except Exception as e:
+            logger.warning(f"Failed to decode refresh token on logout: {e}")
 
-    # Clear session cookies
+    # 3. Require at least one session token to proceed with logout
+    if not tokens_to_revoke:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Authentication required. No session or token provided for logout."
+        )
+
+    # 4. Commit server-side token revocations to PostgreSQL atomically.
+    # If database fails, this raises HTTPException(status_code=503).
+    # We do NOT swallow database errors; the client receives HTTP 503 and cookies remain intact for retry.
+    await auth_service.revoke_tokens(tokens_to_revoke)
+
+    # 5. Success Path: All server-side revocations committed to PostgreSQL.
+    # Now instruct browser to delete session cookies.
     response.delete_cookie(key="pravision_session", path="/", httponly=True, secure=True, samesite="lax")
     response.delete_cookie(key="pravision_token", path="/", httponly=True, secure=True, samesite="lax")
     response.delete_cookie(key="pravision_refresh_token", path="/", httponly=True, secure=True, samesite="lax")
 
     client_ip = _extract_client_ip(request)
-    await auth_service.record_audit("user_logout", current_user.id, current_user.username, "auth", current_user.id, "success", {}, client_ip)
+    if user_id:
+        try:
+            await auth_service.record_audit("user_logout", user_id, username, "auth", user_id, "success", {}, client_ip)
+        except Exception:
+            pass
+
     return {"status": "logged_out", "message": "Session invalidated successfully."}
 
 @auth_router.get("/session")

@@ -45,7 +45,7 @@ logging.basicConfig(
 logger = logging.getLogger("pravision.watchdog")
 
 CHECK_INTERVAL = 15  # seconds
-MAX_CONSECUTIVE_FAILURES = 3
+MAX_CONSECUTIVE_FAILURES = 6  # 90 seconds grace period for remote database startup and migrations
 
 backend_proc = None
 tunnel_proc = None
@@ -104,7 +104,7 @@ def start_tunnel():
 def check_backend_liveness() -> bool:
     try:
         req = urllib.request.Request("http://127.0.0.1:8000/api/storage/status", headers={"User-Agent": "PRAVISION-Watchdog/1.0"})
-        with urllib.request.urlopen(req, timeout=5) as resp:
+        with urllib.request.urlopen(req, timeout=10) as resp:
             return resp.status == 200
     except Exception:
         return False

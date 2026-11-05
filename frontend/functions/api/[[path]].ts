@@ -58,9 +58,10 @@ export const onRequest: PagesFunction = async (context) => {
 
   // Copy incoming headers and guarantee authoritative Cloudflare edge client IP is preserved
   const headers = new Headers(context.request.headers);
-  const edgeClientIp = context.request.headers.get("CF-Connecting-IP");
+  const edgeClientIp = context.request.headers.get("CF-Connecting-IP") || context.request.headers.get("cf-connecting-ip");
   if (edgeClientIp) {
     headers.set("CF-Connecting-IP", edgeClientIp);
+    headers.set("X-Forwarded-For", edgeClientIp);
   }
   headers.set("X-Forwarded-Host", url.host);
   headers.set("X-Forwarded-Proto", url.protocol.replace(":", ""));

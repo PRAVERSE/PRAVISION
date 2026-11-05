@@ -70,7 +70,7 @@ def find_uvicorn_pid() -> int:
 def kill_process(pid: int):
     subprocess.run(f"taskkill /F /PID {pid}", shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
-def wait_for_backend(timeout: int = 30) -> bool:
+def wait_for_backend(timeout: int = 75) -> bool:
     start = time.time()
     while time.time() - start < timeout:
         try:
