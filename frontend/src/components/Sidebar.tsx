@@ -33,6 +33,14 @@ interface SidebarProps {
   userRole?: UserRole;
 }
 
+interface NavItem {
+  id: string;
+  label: string;
+  icon: React.ComponentType<{ className?: string }>;
+  highlight?: boolean;
+  badge?: string | null;
+}
+
 export const Sidebar: React.FC<SidebarProps> = ({ 
   currentView, 
   onNavigate,
@@ -41,11 +49,9 @@ export const Sidebar: React.FC<SidebarProps> = ({
 }) => {
   const [collapsed, setCollapsed] = useState(false);
 
-  const navItems = [
-    // Mission Control
-    { id: 'command_center', label: 'Command Center', icon: LayoutDashboard },
-    { id: 'search', label: 'Universal Intake', icon: Search, highlight: true },
-    { id: 'live', label: 'Live Investigation', icon: Radio, badge: hasActiveInvestigation ? 'Active' : null },
+  const navItems: NavItem[] = [
+    // Core Unified Experience
+    { id: 'universal_search', label: 'Universal Intelligence', icon: Search, highlight: true },
     { id: 'cases', label: 'Case Dossiers', icon: FolderLock },
 
     // Analytical Workspaces
@@ -55,18 +61,9 @@ export const Sidebar: React.FC<SidebarProps> = ({
     { id: 'threat_intel', label: 'Threat Intel & IOCs', icon: ShieldAlert },
     { id: 'entity_db', label: 'Entity Database', icon: Database },
     { id: 'evidence_vault', label: 'Evidence Center', icon: HardDrive },
-    { id: 'ai_assistant', label: 'AI Intelligence Copilot', icon: Bot },
+    { id: 'ai_assistant', label: 'AI Copilot', icon: Bot },
     
-    // Domain specific modes
-    { id: 'image_intel', label: 'Image Forensics', icon: Image },
-    { id: 'email_intel', label: 'Email Intelligence', icon: Mail },
-    { id: 'username_intel', label: 'Username Intelligence', icon: User },
-    { id: 'phone_intel', label: 'Phone Intelligence', icon: Phone },
-    { id: 'website_intel', label: 'Domain & Web Intel', icon: Globe2 },
-    { id: 'infra_intel', label: 'Infrastructure Recon', icon: Server },
-    
-    // Tools, Reports, Settings
-    { id: 'tool_center', label: 'Tool Center (89)', icon: Wrench },
+    // Reports & System Settings
     { id: 'reports', label: 'Reports & Export', icon: FileText },
     { id: 'settings', label: 'System Admin', icon: Settings }
   ];

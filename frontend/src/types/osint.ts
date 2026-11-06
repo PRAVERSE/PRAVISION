@@ -246,4 +246,73 @@ export interface AuthState {
   isAuthenticated: boolean;
 }
 
+// ----------------- UNIVERSAL INVESTIGATION REPORT MODELS -----------------
+
+export interface UniversalReportSummary {
+  headline: string;
+  risk_level: string; // Informational, Low, Medium, High
+  confidence_score: number;
+  key_takeaways: string[];
+}
+
+export interface UniversalAssociatedProfile {
+  platform: string;
+  identifier: string;
+  url: string;
+  status: string;
+  details?: string;
+  avatar_url?: string;
+}
+
+export interface UniversalContactAssociation {
+  association_type: string;
+  value: string;
+  source: string;
+  confidence: string;
+}
+
+export interface UniversalPublicReference {
+  title: string;
+  url: string;
+  source_type: string;
+  description: string;
+}
+
+export interface UniversalRelatedFinding {
+  title: string;
+  details: string;
+  category: string;
+  confidence: string;
+}
+
+export interface UniversalConfidenceBreakdown {
+  factor: string;
+  assessment: string;
+  impact: string;
+}
+
+export interface UniversalConfidenceStatus {
+  overall_level: string;
+  score: number;
+  breakdown: UniversalConfidenceBreakdown[];
+}
+
+export interface ConsolidatedReport {
+  id: string;
+  target: string;
+  target_type: 'email' | 'phone' | 'username' | 'image' | string;
+  status: 'completed' | 'completed_with_warnings' | 'failed' | 'running' | string;
+  timestamp: string;
+  duration_seconds: number;
+  summary: UniversalReportSummary;
+  identified_information: Record<string, any>;
+  associated_profiles: UniversalAssociatedProfile[];
+  contact_associations: UniversalContactAssociation[];
+  public_references: UniversalPublicReference[];
+  related_findings: UniversalRelatedFinding[];
+  confidence_and_verification: UniversalConfidenceStatus;
+  investigation_limitations: string[];
+}
+
+
 

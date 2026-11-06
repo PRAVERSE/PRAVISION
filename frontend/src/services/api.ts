@@ -439,6 +439,49 @@ export const osintApi = {
     });
     if (!res.ok) throw new Error(await res.text());
     return res.json();
+  },
+
+  // ----------------- UNIVERSAL INTELLIGENCE INVESTIGATION -----------------
+
+  async runUniversalInvestigation(
+    params: { query?: string; type?: string; file?: File }
+  ): Promise<any> {
+    if (params.file) {
+      const formData = new FormData();
+      formData.append('file', params.file);
+      formData.append('type', params.type || 'image');
+      if (params.query) formData.append('query', params.query);
+
+      const res = await authFetch(`${API_BASE}/investigate/universal`, {
+        method: 'POST',
+        body: formData
+      });
+      if (!res.ok) throw new Error(await res.text());
+      return res.json();
+    } else {
+      const res = await authFetch(`${API_BASE}/investigate/universal`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          query: params.query || '',
+          type: params.type || 'auto'
+        })
+      });
+      if (!res.ok) throw new Error(await res.text());
+      return res.json();
+    }
+  },
+
+  async getUniversalJob(jobId: string): Promise<any> {
+    const res = await authFetch(`${API_BASE}/investigate/jobs/${encodeURIComponent(jobId)}`);
+    if (!res.ok) throw new Error(await res.text());
+    return res.json();
+  },
+
+  async getUniversalHistory(): Promise<any> {
+    const res = await authFetch(`${API_BASE}/investigate/history`);
+    if (!res.ok) throw new Error(await res.text());
+    return res.json();
   }
 };
 

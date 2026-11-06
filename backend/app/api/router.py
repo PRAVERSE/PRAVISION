@@ -31,10 +31,62 @@ from app.intelligence.timeline_engine import timeline_engine
 from app.intelligence.threat_intel import threat_intel_engine
 from app.intelligence.document_intel import document_intel
 from app.intelligence.ai_assistant import intelligence_assistant
+from app.intelligence.universal_orchestrator import universal_orchestrator
 from app.api.auth_routes import auth_router
 
 router = APIRouter()
 router.include_router(auth_router)
+
+# ----------------- UNIVERSAL INTELLIGENCE INVESTIGATION -----------------
+
+@router.post("/investigate/universal")
+async def start_universal_investigation(request: Request):
+    content_type = request.headers.get("content-type", "")
+    query = ""
+    manual_type = "auto"
+    file_bytes = None
+    filename = None
+
+    if "multipart/form-data" in content_type:
+        form = await request.form()
+        query = str(form.get("query") or "")
+        manual_type = str(form.get("type") or "auto")
+        file = form.get("file")
+        if file and hasattr(file, "read"):
+            file_bytes = await file.read()
+            filename = getattr(file, "filename", "uploaded_image.jpg")
+    else:
+        try:
+            body = await request.json()
+            query = str(body.get("query") or "")
+            manual_type = str(body.get("type") or "auto")
+        except Exception:
+            pass
+
+    if not query.strip() and not file_bytes:
+        raise HTTPException(status_code=400, detail="A query string or image file is required.")
+
+    report = await universal_orchestrator.investigate(
+        query=query.strip(),
+        manual_type=manual_type if manual_type != "auto" else None,
+        file_bytes=file_bytes,
+        filename=filename
+    )
+    return report
+
+@router.get("/investigate/jobs/{job_id}")
+async def get_universal_investigation_job(job_id: str):
+    report = universal_orchestrator.get_job(job_id)
+    if not report:
+        raise HTTPException(status_code=404, detail="Investigation job not found.")
+    return report
+
+@router.get("/investigate/history")
+async def get_universal_investigation_history():
+    return {
+        "history": universal_orchestrator.list_recent_jobs()
+    }
+
 
 # ----------------- INPUT CLASSIFICATION -----------------
 

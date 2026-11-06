@@ -11,6 +11,7 @@ import { ActiveInvestigation, EvidenceFinding, IntelligenceGraph, ConnectorManif
 import { LoginModal } from './components/LoginModal';
 import { EntityDossierDrawer } from './components/EntityDossierDrawer';
 import { Layers } from 'lucide-react';
+import { UniversalIntelligenceSearch } from './views/UniversalIntelligenceSearch';
 
 // Lazy-loaded secondary analytical views (Code-split chunks)
 const CasesView = lazyWithRetry(() => import('./views/CasesView'), 'CasesView');
@@ -34,7 +35,7 @@ const ReportsView = lazyWithRetry(() => import('./views/ReportsView'), 'ReportsV
 const SettingsView = lazyWithRetry(() => import('./views/SettingsView'), 'SettingsView');
 
 export const App: React.FC = () => {
-  const [currentView, setCurrentView] = useState<string>('overview');
+  const [currentView, setCurrentView] = useState<string>('universal_search');
   const [activeInvestigation, setActiveInvestigation] = useState<ActiveInvestigation | null>(null);
   const [findings, setFindings] = useState<EvidenceFinding[]>([]);
   const [graph, setGraph] = useState<IntelligenceGraph>({ nodes: [], edges: [] });
@@ -394,13 +395,8 @@ export const App: React.FC = () => {
         />
 
         <main className="flex-1 overflow-y-auto bg-[#080D16]">
-          {(currentView === 'overview' || currentView === 'command_center') && (
-            <CommandCenterView
-              activeInvestigation={activeInvestigation}
-              findings={findings}
-              graph={graph}
-              onNavigate={setCurrentView}
-            />
+          {(currentView === 'overview' || currentView === 'command_center' || currentView === 'universal_search' || currentView === 'search') && (
+            <UniversalIntelligenceSearch />
           )}
 
           <Suspense fallback={<ViewLoadingFallback title={`LOADING ${currentView.toUpperCase().replace('_', ' ')}`} />}>

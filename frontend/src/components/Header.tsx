@@ -35,7 +35,7 @@ export const Header: React.FC<HeaderProps> = ({
   return (
     <header className="h-16 bg-[#0E1624] border-b border-[#26364B] px-6 flex items-center justify-between sticky top-0 z-40">
       <div className="flex items-center space-x-4">
-        <div className="flex items-center space-x-2 cursor-pointer" onClick={() => onNavigate('overview')}>
+        <div className="flex items-center space-x-2 cursor-pointer" onClick={() => onNavigate('universal_search')}>
           <div className="w-9 h-9 rounded-lg bg-gradient-to-tr from-[#38BDF8] to-[#818CF8] flex items-center justify-center shadow-lg shadow-sky-500/20">
             <Layers className="w-5 h-5 text-[#080D16]" />
           </div>
