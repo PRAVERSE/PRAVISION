@@ -25,7 +25,7 @@ def run_tests():
         data=json.dumps({"username": u, "password": p}).encode("utf-8"),
         headers={"Content-Type": "application/json", "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) PRAVISION-ProdTest/2.5"}
     )
-    with urllib.request.urlopen(login_req, timeout=15) as resp:
+    with urllib.request.urlopen(login_req, timeout=35) as resp:
         token = json.loads(resp.read().decode("utf-8"))["access_token"]
     print(f"Authenticated successfully as {u}. Acquired JWT token.")
 
@@ -54,15 +54,17 @@ def run_tests():
                 "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) PRAVISION-ProdTest/2.5"
             }
         )
-        with urllib.request.urlopen(query_req, timeout=25) as resp:
+        with urllib.request.urlopen(query_req, timeout=35) as resp:
             data = json.loads(resp.read().decode("utf-8"))
             info = data.get("identified_information", {})
             e164 = info.get("E.164 Format")
             country_code = info.get("Country Calling Code")
-            country = info.get("Country / Territorial Origin")
             region = info.get("Telecommunications Region")
             line_type = info.get("Line Type")
-            valid = info.get("Valid E.164 Allocation")
+            orig_carrier = info.get("Original Allocation Carrier")
+            curr_carrier = info.get("Current Carrier")
+            validity = info.get("Numbering-Plan Validity")
+            sub_status = info.get("Live Subscriber Status")
             status = data.get("status")
 
             item = {
@@ -70,10 +72,12 @@ def run_tests():
                 "status": status,
                 "e164": e164,
                 "country_code": country_code,
-                "country": country,
                 "region": region,
                 "line_type": line_type,
-                "valid": valid,
+                "original_allocation_carrier": orig_carrier,
+                "current_carrier": curr_carrier,
+                "numbering_plan_validity": validity,
+                "live_subscriber_status": sub_status,
                 "headline": data.get("summary", {}).get("headline"),
                 "duration": data.get("duration_seconds")
             }
@@ -81,9 +85,12 @@ def run_tests():
             print(f"  Status: {status}")
             print(f"  E.164 Output: {e164}")
             print(f"  Country Calling Code: {country_code}")
-            print(f"  Country / Region: {country} | {region}")
+            print(f"  Telecommunications Region: {region}")
             print(f"  Line Type: {line_type}")
-            print(f"  Valid E.164 Allocation: {valid}")
+            print(f"  Original Allocation Carrier: {orig_carrier}")
+            print(f"  Current Carrier: {curr_carrier}")
+            print(f"  Numbering-Plan Validity: {validity}")
+            print(f"  Live Subscriber Status: {sub_status}")
             print(f"  Execution Time: {data.get('duration_seconds')}s")
 
     print("\n" + "=" * 80)
@@ -93,3 +100,4 @@ def run_tests():
 
 if __name__ == "__main__":
     run_tests()
+

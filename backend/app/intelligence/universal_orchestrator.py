@@ -212,6 +212,8 @@ class UniversalOrchestrator:
         dmarc_record: Optional[str] = None
         mx_status: str = "not_performed"
         mx_status_explanation: str = ""
+        is_nxdomain: bool = False
+        is_noanswer: bool = False
 
         if is_public_webmail:
             mx_status = "suppressed_by_policy"
@@ -233,14 +235,20 @@ class UniversalOrchestrator:
                     mx_status = "resolved"
                     mx_status_explanation = f"Successfully resolved {len(mx_records)} authoritative MX host(s) for domain."
                 else:
+                    is_noanswer = True
                     mx_status = "resolved"
-                    mx_status_explanation = "Domain published zero active MX records."
-            except (dns.resolver.NXDOMAIN, dns.resolver.NoAnswer):
+                    mx_status_explanation = f"Domain '{domain_part}' exists in DNS, but returned no MX answer (NoAnswer). Domain has no published mail exchange records."
+            except dns.resolver.NoAnswer:
+                is_noanswer = True
                 mx_status = "resolved"
-                mx_status_explanation = "Domain publishes no active MX records."
+                mx_status_explanation = f"Domain '{domain_part}' exists in DNS, but returned no MX answer (NoAnswer). Domain has no published mail exchange records."
+            except dns.resolver.NXDOMAIN:
+                is_nxdomain = True
+                mx_status = "resolved"
+                mx_status_explanation = f"Queried domain '{domain_part}' does not exist in the Domain Name System (NXDOMAIN authoritative response). Domain is unregistered or inactive."
             except Exception as e:
                 mx_status = "lookup_failed"
-                mx_status_explanation = f"DNS resolution failed or timed out: {type(e).__name__}"
+                mx_status_explanation = f"DNS resolution failed or timed out connecting to authoritative nameservers ({type(e).__name__})."
 
             try:
                 txt_answers = dns_resolver.resolve(domain_part, 'TXT')
@@ -433,6 +441,12 @@ class UniversalOrchestrator:
         elif mx_status == "resolved" and mx_records:
             mx_assessment = f"Found {len(mx_records)} MX host(s)"
             mx_impact = "Positive"
+        elif is_nxdomain:
+            mx_assessment = "Queried domain does not exist in DNS (NXDOMAIN)"
+            mx_impact = "Cautionary"
+        elif is_noanswer:
+            mx_assessment = "Domain exists, but returned no MX records (NoAnswer)"
+            mx_impact = "Cautionary"
         elif mx_status == "lookup_failed":
             mx_assessment = "DNS resolution timed out or failed"
             mx_impact = "Cautionary"
@@ -456,21 +470,34 @@ class UniversalOrchestrator:
             ))
 
         base_score = 75
-        if mx_records or mx_status == "suppressed_by_policy":
+        if (mx_records or mx_status == "suppressed_by_policy") and not is_nxdomain and not is_noanswer:
             base_score += 10
-        if is_disposable:
-            base_score -= 20
+        if is_disposable or is_nxdomain:
+            base_score -= 25
+        elif is_noanswer:
+            base_score -= 15
         if associated_profiles:
             base_score += 10
         confidence_score = max(20, min(95, base_score))
 
-        risk_level = "High" if is_disposable else ("Low" if (mx_records or mx_status == "suppressed_by_policy") else "Medium")
-        headline = f"Active {provider} Address ({email})" if (mx_records or mx_status == "suppressed_by_policy" or provider != "Custom / Private Mail Host") else f"Unverified / Inactive Mail Host ({email})"
+        risk_level = "High" if (is_disposable or is_nxdomain) else ("Low" if (mx_records or mx_status == "suppressed_by_policy") else "Medium")
+        if is_nxdomain:
+            headline = f"Non-Existent Mail Domain ({email})"
+        elif is_noanswer:
+            headline = f"Inactive Mail Domain ({email})"
+        elif mx_records or mx_status == "suppressed_by_policy" or provider != "Custom / Private Mail Host":
+            headline = f"Active {provider} Address ({email})"
+        else:
+            headline = f"Unverified / Inactive Mail Host ({email})"
 
         if mx_status == "suppressed_by_policy":
             mx_takeaway = f"Domain MX status: Suppressed by policy ({provider} classified by domain architecture without deep DNS expansion)."
         elif mx_status == "resolved" and mx_records:
             mx_takeaway = f"Domain MX status: Configured with {len(mx_records)} mail server(s)."
+        elif is_nxdomain:
+            mx_takeaway = f"Domain MX status: Domain '{domain_part}' does not exist in DNS (NXDOMAIN)."
+        elif is_noanswer:
+            mx_takeaway = f"Domain MX status: Domain '{domain_part}' exists in DNS but returned zero MX records (NoAnswer)."
         elif mx_status == "lookup_failed":
             mx_takeaway = "Domain MX status: Lookup failed due to DNS timeout / unreachable nameservers."
         elif mx_status == "not_performed":
@@ -523,9 +550,10 @@ class UniversalOrchestrator:
                 "MX Records": (
                     ", ".join(mx_records) if mx_status == "resolved" and mx_records
                     else ("Suppressed by Policy (Webmail Domain)" if mx_status == "suppressed_by_policy"
+                    else ("Domain Does Not Exist (NXDOMAIN)" if is_nxdomain
+                    else ("None Published (NoAnswer)" if is_noanswer
                     else ("Lookup Failed (DNS Timeout / Unreachable)" if mx_status == "lookup_failed"
-                    else ("None Published" if mx_status == "resolved" and not mx_records
-                    else "Not Performed")))
+                    else "Not Performed"))))
                 ),
                 "SPF Policy Published": "Yes" if spf_record else ("Suppressed (Webmail Domain)" if is_public_webmail else "No"),
                 "DMARC Policy Published": "Yes" if dmarc_record else ("Suppressed (Webmail Domain)" if is_public_webmail else "No")
@@ -608,9 +636,9 @@ class UniversalOrchestrator:
         ]
         if car_name and "Unassigned" not in car_name:
             contact_associations.append(ContactAssociation(
-                association_type="Carrier / Network Provider",
+                association_type="Original Allocation Carrier",
                 value=car_name,
-                source="Carrier Identification Database",
+                source="ITU-T Numbering Range Plan (Original Carrier Block)",
                 confidence="High"
             ))
         if timezones:
@@ -629,8 +657,8 @@ class UniversalOrchestrator:
                 confidence="High"
             ),
             RelatedFinding(
-                title="Carrier Routing",
-                details=f"Allocated telecommunications operator: {car_name}",
+                title="Numbering Range Allocation",
+                details=f"Original carrier block allocated to {car_name}. Current operating carrier is unverified due to Mobile Number Portability (MNP) and requires live HLR lookup.",
                 category="Infrastructure",
                 confidence="High" if car_name != "Network / Unassigned Carrier" else "Moderate"
             )
@@ -674,8 +702,8 @@ class UniversalOrchestrator:
         confidence_breakdown = [
             ConfidenceBreakdown(factor="E.164 ITU-T Parsing", assessment="Parsed and formatted according to international standard", impact="Positive"),
             ConfidenceBreakdown(factor="Geographic Allocation", assessment=f"Allocated to {geo_loc}", impact="Positive"),
-            ConfidenceBreakdown(factor="Carrier Resolution", assessment=f"Routed via {car_name}", impact="Positive" if "Unassigned" not in car_name else "Neutral"),
-            ConfidenceBreakdown(factor="Validity Verification", assessment="Formally valid under national numbering plan" if is_valid else "Possible but unconfirmed under strict national dial plan", impact="Positive" if is_valid else "Cautionary")
+            ConfidenceBreakdown(factor="Carrier Resolution", assessment=f"Original block allocated to {car_name} (Current carrier unverified due to MNP)", impact="Positive" if "Unassigned" not in car_name else "Neutral"),
+            ConfidenceBreakdown(factor="Validity Verification", assessment="Formally valid under national numbering plan (Subscriber activity unverified)" if is_valid else "Possible but unconfirmed under strict national dial plan", impact="Positive" if is_valid else "Cautionary")
         ]
 
         duration = round(time.time() - start_time, 2)
@@ -686,14 +714,15 @@ class UniversalOrchestrator:
             status="completed",
             duration_seconds=duration,
             summary=ReportSummary(
-                headline=f"{line_type} Number in {geo_loc} ({formatted_e164})",
+                headline=f"Allocated {line_type} Numbering Range in {geo_loc} ({formatted_e164})" if is_valid else f"Unconfirmed {line_type} Format in {geo_loc} ({formatted_e164})",
                 risk_level="Low" if is_valid else "Medium",
                 confidence_score=score,
                 key_takeaways=[
                     f"International format: {formatted_intl} (Country Code +{country_code}).",
-                    f"Line classification: {line_type}.",
+                    f"Line classification: {line_type} numbering range.",
                     f"Telecommunications region: {geo_loc}.",
-                    f"Carrier / Operator: {car_name}.",
+                    f"Original allocation carrier: {car_name} (Current carrier: Not verified — subject to Mobile Number Portability).",
+                    f"Numbering plan validity: Conforms to national ITU-T allocation (Live subscriber assignment and active line reachability unverified).",
                     f"Associated timezone: {', '.join(timezones) if timezones else 'Global UTC'}."
                 ]
             ),
@@ -706,9 +735,11 @@ class UniversalOrchestrator:
                 "National Significant Number": str(national_number),
                 "Line Type": line_type,
                 "Telecommunications Region": geo_loc,
-                "Operating Carrier": car_name,
+                "Original Allocation Carrier": car_name,
+                "Current Carrier": "Not verified (subject to Mobile Number Portability)",
                 "Timezones": ", ".join(timezones) if timezones else "Unspecified",
-                "Formally Valid": "Yes" if is_valid else "Possible (Unverified)"
+                "Numbering-Plan Validity": "Formally valid ITU-T E.164 allocation" if is_valid else "Possible (Unconfirmed dial plan format)",
+                "Live Subscriber Status": "Not verified (subscriber activity/reachability unverified)"
             },
             associated_profiles=[],
             contact_associations=contact_associations,
@@ -720,6 +751,8 @@ class UniversalOrchestrator:
                 breakdown=confidence_breakdown
             ),
             investigation_limitations=[
+                "Offline ITU-T numbering plan validation verifies that digits conform to national carrier allocations, but does not verify live subscriber assignment, current operational status, or carrier changes via Mobile Number Portability (MNP).",
+                "Current carrier: Not verified without authoritative real-time HLR/SS7 or commercial CNAM lookup.",
                 "Real-time GPS cell tower triangulation and subscriber identity disclosure require lawful telecommunication warrants and are not accessible via OSINT.",
                 "VoIP and virtual numbers may be used across geographical boundaries regardless of allocated area code.",
                 "Caller ID spoofing protections apply: actual outbound callers can alter display numbers."

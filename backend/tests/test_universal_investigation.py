@@ -188,3 +188,99 @@ async def test_universal_api_endpoints_and_auth():
         assert "history" in history_resp.json()
         assert len(history_resp.json()["history"]) >= 1
 
+
+import dns.resolver
+from unittest.mock import patch, MagicMock
+from app.build_identity import validate_commit_sha, get_build_commit_sha
+
+def test_build_identity_unit():
+    # 1. Valid 40-character SHA
+    valid_sha = "f206dfc3091382f20ab80a807e6a0363bed013d3"
+    assert validate_commit_sha(valid_sha) == valid_sha
+    assert validate_commit_sha(valid_sha.upper()) == valid_sha
+
+    # 2. Invalid inputs
+    assert validate_commit_sha("86cf692") is None  # too short
+    assert validate_commit_sha("f206dfc3091382f20ab80a807e6a0363bed013d3extra") is None  # too long
+    assert validate_commit_sha("zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz") is None  # non-hex
+    assert validate_commit_sha("") is None
+    assert validate_commit_sha(None) is None
+
+    # 3. Environment variable resolution
+    with patch.dict("os.environ", {"GIT_COMMIT_SHA": valid_sha}):
+        assert get_build_commit_sha() == valid_sha
+
+    # 4. Fallback to unknown when all sources fail
+    with patch.dict("os.environ", {}, clear=True), \
+         patch("pathlib.Path.is_file", return_value=False), \
+         patch("subprocess.check_output", side_effect=Exception("No git")):
+        assert get_build_commit_sha() == "unknown"
+
+
+@pytest.mark.asyncio
+async def test_email_mx_deterministic_mocking():
+    # 1. Successful MX Resolution
+    mock_rdata = MagicMock()
+    mock_rdata.exchange = "mail.customdomain.org."
+    with patch("dns.resolver.Resolver.resolve") as mock_resolve:
+        mock_resolve.return_value = [mock_rdata]
+        report = await universal_orchestrator.investigate("user@customdomain.org", manual_type="email")
+        assert report.identified_information["MX Routing Status"] == "resolved"
+        assert "mail.customdomain.org" in report.identified_information["MX Records"]
+        assert "Successfully resolved 1 authoritative MX host(s)" in report.identified_information["MX Resolution Details"]
+
+    # 2. NoAnswer (Domain exists, but has no MX records)
+    with patch("dns.resolver.Resolver.resolve", side_effect=dns.resolver.NoAnswer):
+        report = await universal_orchestrator.investigate("user@existingdomain.org", manual_type="email")
+        assert report.identified_information["MX Routing Status"] == "resolved"
+        assert "NoAnswer" in report.identified_information["MX Records"]
+        assert "NoAnswer" in report.identified_information["MX Resolution Details"]
+        assert "Inactive Mail Domain" in report.summary.headline
+
+    # 3. NXDOMAIN (Domain does not exist in DNS)
+    with patch("dns.resolver.Resolver.resolve", side_effect=dns.resolver.NXDOMAIN):
+        report = await universal_orchestrator.investigate("user@nonexistent-domain-12345.xyz", manual_type="email")
+        assert report.identified_information["MX Routing Status"] == "resolved"
+        assert "NXDOMAIN" in report.identified_information["MX Records"]
+        assert "NXDOMAIN" in report.identified_information["MX Resolution Details"]
+        assert "Non-Existent Mail Domain" in report.summary.headline
+        assert report.summary.risk_level == "High"
+
+    # 4. Timeout / Lookup Failed (Nameserver timeout or connection error)
+    with patch("dns.resolver.Resolver.resolve", side_effect=dns.resolver.Timeout("Query timed out")):
+        report = await universal_orchestrator.investigate("user@timeoutdomain.org", manual_type="email")
+        assert report.identified_information["MX Routing Status"] == "lookup_failed"
+        assert "Lookup Failed" in report.identified_information["MX Records"]
+        assert "lookup_failed" in report.identified_information["MX Routing Status"]
+
+    # 5. Suppressed by policy (Public consumer webmail like Gmail)
+    report_gmail = await universal_orchestrator.investigate("user@gmail.com", manual_type="email")
+    assert report_gmail.identified_information["MX Routing Status"] == "suppressed_by_policy"
+    assert "Suppressed by Policy" in report_gmail.identified_information["MX Records"]
+    assert "deep DNS infrastructure expansion is suppressed by policy" in report_gmail.identified_information["MX Resolution Details"]
+
+    # 6. Not performed (Malformed email syntax)
+    report_bad = await universal_orchestrator.investigate("not-an-email-at-all", manual_type="email")
+    assert report_bad.identified_information["MX Routing Status"] == "not_performed"
+    assert report_bad.identified_information["MX Records"] == "Not Performed"
+
+
+@pytest.mark.asyncio
+async def test_phone_carrier_terminology_and_validity():
+    report = await universal_orchestrator.investigate("14155552671", manual_type="phone")
+    assert report.target_type == "phone"
+    assert report.status == "completed"
+    
+    info = report.identified_information
+    # Accurate carrier terminology
+    assert "Original Allocation Carrier" in info
+    assert "Current Carrier" in info
+    assert "Not verified" in info["Current Carrier"]
+    assert "Numbering-Plan Validity" in info
+    assert "Live Subscriber Status" in info
+    assert "Not verified" in info["Live Subscriber Status"]
+    
+    # Limitations explain Mobile Number Portability (MNP)
+    limitations_text = " ".join(report.investigation_limitations)
+    assert "Mobile Number Portability" in limitations_text
+

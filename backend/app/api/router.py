@@ -383,12 +383,7 @@ async def export_report(payload: Dict[str, str]):
 
 # ----------------- SETTINGS & SECRETS -----------------
 
-def get_active_commit_sha() -> str:
-    try:
-        import subprocess
-        return subprocess.check_output(["git", "rev-parse", "HEAD"], timeout=2).decode().strip()
-    except Exception:
-        return "86cf692ad52552dbfef2bd386e5811d5a764a94c"
+from app.build_identity import get_build_commit_sha
 
 @router.get("/version")
 async def get_version():
@@ -396,7 +391,7 @@ async def get_version():
         "app_name": settings.app_name,
         "full_name": settings.full_name,
         "version": settings.version,
-        "commit_sha": get_active_commit_sha(),
+        "commit_sha": get_build_commit_sha(),
         "status": "operational",
         "domain": "https://pravision.pages.dev"
     }
@@ -408,7 +403,7 @@ async def get_settings():
         "full_name": settings.full_name,
         "tagline": settings.tagline,
         "version": settings.version,
-        "commit_sha": get_active_commit_sha(),
+        "commit_sha": get_build_commit_sha(),
         "limits": settings.limits.dict(),
         "configured_api_keys": secret_vault.get_status_overview(),
         "persist_history": settings.persist_investigations,

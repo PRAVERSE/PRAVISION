@@ -34,6 +34,8 @@ def run_tests():
         ("Google Corporate Domain (Custom MX)", "security@google.com"),
         ("Proton Mail (Encrypted Webmail)", "contact@proton.me"),
         ("Custom Corporate (OpenAI)", "contact@openai.com"),
+        ("Domain Exists But No MX (NoAnswer)", "contact@httpbin.org"),
+        ("Non-Existent Domain (NXDOMAIN)", "analyst@this-domain-definitely-does-not-exist-xyz-987.org"),
         ("Malformed Email Syntax", "malformed-address-no-at"),
     ]
 
