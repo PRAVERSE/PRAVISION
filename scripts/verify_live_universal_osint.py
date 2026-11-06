@@ -41,7 +41,7 @@ def req(url: str, method: str = "GET", data: dict = None, token: str = None):
     request = urllib.request.Request(url, data=body, headers=hdrs, method=method)
 
     try:
-        with urllib.request.urlopen(request, timeout=20) as resp:
+        with urllib.request.urlopen(request, timeout=35) as resp:
             content = resp.read().decode("utf-8")
             try:
                 parsed = json.loads(content)
