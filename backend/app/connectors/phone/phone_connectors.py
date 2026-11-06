@@ -23,47 +23,108 @@ LINE_TYPE_MAP = {
 }
 
 def parse_phone_resiliently(raw_input: str) -> Optional[phonenumbers.PhoneNumber]:
-    """Parses a phone number input with or without leading +, with regional fallback."""
+    """
+    Parses a phone number input with deterministic international resolution:
+    - Supports international format with leading + (e.g. +91 9820012345, +1 415 555 2671)
+    - Supports prefixes 00 or 011
+    - Supports Indian mobile numbers with/without +91, domestic trunk 0, or direct 10-digit series (6, 7, 8, 9)
+    - Disambiguates 10-digit numbers between ITU-T national numbering plans
+    - Rejects invalid or unallocated strings safely without silent misattribution
+    """
     cleaned = raw_input.strip()
     digits_only = re.sub(r'[^\d]', '', cleaned)
-    if not digits_only or len(digits_only) < 6:
+    if not digits_only or len(digits_only) < 7:
         return None
 
-    # 1. Direct parse if leading +
+    # 1. Leading +
     if cleaned.startswith("+"):
         try:
-            parsed = phonenumbers.parse(cleaned, None)
-            if phonenumbers.is_possible_number(parsed):
-                return parsed
+            p = phonenumbers.parse(cleaned, None)
+            if phonenumbers.is_valid_number(p) or phonenumbers.is_possible_number(p):
+                return p
         except Exception:
             pass
 
-    # 2. Check for international prefix 00 or 011
+    # 2. International prefixes 00 or 011
     if digits_only.startswith("00") and len(digits_only) > 8:
         try:
-            parsed = phonenumbers.parse("+" + digits_only[2:], None)
-            if phonenumbers.is_possible_number(parsed):
-                return parsed
+            p = phonenumbers.parse("+" + digits_only[2:], None)
+            if phonenumbers.is_valid_number(p):
+                return p
         except Exception:
             pass
-
-    # 3. Candidate prepend +
-    try:
-        parsed = phonenumbers.parse("+" + digits_only, None)
-        if phonenumbers.is_possible_number(parsed):
-            return parsed
-    except Exception:
-        pass
-
-    # 4. Fallback region candidates
-    for reg in ["US", "IN", "GB", "CA", "AU", "DE", "FR"]:
+    elif digits_only.startswith("011") and len(digits_only) > 9:
         try:
-            parsed = phonenumbers.parse(cleaned, reg)
-            if phonenumbers.is_possible_number(parsed):
-                return parsed
+            p = phonenumbers.parse("+" + digits_only[3:], None)
+            if phonenumbers.is_valid_number(p):
+                return p
         except Exception:
             pass
 
+    # 3. Explicit India prefix without + (12 digits starting with 91)
+    if len(digits_only) == 12 and digits_only.startswith("91"):
+        try:
+            p = phonenumbers.parse("+" + digits_only, None)
+            if phonenumbers.is_valid_number(p):
+                return p
+        except Exception:
+            pass
+
+    # 4. Indian domestic trunk: 0 followed by 10 digits
+    if len(digits_only) == 11 and digits_only.startswith("0"):
+        try:
+            p = phonenumbers.parse(digits_only[1:], "IN")
+            if phonenumbers.is_valid_number(p):
+                return p
+        except Exception:
+            pass
+
+    # 5. North American 11 digits: 1 followed by 10 digits
+    if len(digits_only) == 11 and digits_only.startswith("1"):
+        try:
+            p = phonenumbers.parse("+" + digits_only, None)
+            if phonenumbers.is_valid_number(p):
+                return p
+        except Exception:
+            pass
+
+    # 6. 10-digit evaluation (disambiguate IN vs US vs others)
+    if len(digits_only) == 10:
+        p_in = None
+        p_us = None
+        try:
+            p_in = phonenumbers.parse(digits_only, "IN")
+        except Exception:
+            pass
+        try:
+            p_us = phonenumbers.parse(digits_only, "US")
+        except Exception:
+            pass
+
+        in_valid = p_in and phonenumbers.is_valid_number(p_in)
+        us_valid = p_us and phonenumbers.is_valid_number(p_us)
+
+        if in_valid and not us_valid:
+            return p_in
+        elif us_valid and not in_valid:
+            return p_us
+        elif in_valid and us_valid:
+            # If formatted with US style (e.g. '(415)' or '-') or begins with non-Indian mobile range
+            if "(" in cleaned or "-" in cleaned or digits_only[0] not in "6789":
+                return p_us
+            else:
+                return p_in
+
+    # 7. Fallback regional scan for valid numbers
+    for reg in ["IN", "US", "GB", "CA", "AU", "DE", "FR"]:
+        try:
+            p = phonenumbers.parse(cleaned, reg)
+            if phonenumbers.is_valid_number(p):
+                return p
+        except Exception:
+            pass
+
+    # 8. No silent guessing of invalid strings
     return None
 
 class PhoneInfogaConnector(BaseConnector):

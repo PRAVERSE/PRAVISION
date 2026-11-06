@@ -969,6 +969,44 @@ class UniversalOrchestrator:
         sha256_hash = hashlib.sha256(file_bytes).hexdigest()
         md5_hash = hashlib.md5(file_bytes).hexdigest()
 
+        # Reject oversized payloads (>25 MB) to guard server memory
+        MAX_IMAGE_BYTES = 25 * 1024 * 1024
+        if len(file_bytes) > MAX_IMAGE_BYTES:
+            duration = round(time.time() - start_time, 2)
+            report = ConsolidatedReport(
+                id=job_id,
+                target=filename,
+                target_type="image",
+                status="failed",
+                duration_seconds=duration,
+                summary=ReportSummary(
+                    headline=f"Upload rejected: File exceeds maximum allowed size (25 MB)",
+                    risk_level="High",
+                    confidence_score=100,
+                    key_takeaways=[
+                        f"Submitted file ({file_size_kb / 1024:.2f} MB) exceeds maximum threshold of 25 MB.",
+                        "Uploads above 25 MB are rejected to prevent memory exhaustion and DoS attacks."
+                    ]
+                ),
+                identified_information={
+                    "Filename": filename,
+                    "File Size": f"{file_size_kb} KB",
+                    "Rejection Reason": "File size exceeds 25 MB threshold"
+                },
+                confidence_and_verification=ConfidenceStatus(
+                    overall_level="High",
+                    score=100,
+                    breakdown=[
+                        ConfidenceBreakdown(factor="Payload Size Guard", assessment="Exceeds 25 MB threshold", impact="Cautionary")
+                    ]
+                ),
+                investigation_limitations=[
+                    "Files exceeding the 25 MB memory boundary are not parsed."
+                ]
+            )
+            self._jobs[job_id] = report
+            return report
+
         try:
             pil_img = Image.open(io.BytesIO(file_bytes))
             img_format = pil_img.format or "Unknown Format"
@@ -1114,31 +1152,31 @@ class UniversalOrchestrator:
                 confidence="High"
             ))
 
-        # Reverse image search engines
+        # Reverse image search engines (External reference links only)
         public_references: List[PublicReference] = [
             PublicReference(
-                title="Google Lens Visual Search",
+                title="Google Lens Visual Search (External)",
                 url="https://lens.google.com/",
-                source_type="Search Index",
-                description="Global multi-modal visual similarity index for reverse photograph matching"
+                source_type="External Search Index Link",
+                description="External reference link for manual visual similarity search (automated visual indexing is not executed server-side)"
             ),
             PublicReference(
-                title="Bing Visual Search",
+                title="Bing Visual Search (External)",
                 url="https://www.bing.com/visualsearch",
-                source_type="Search Index",
-                description="Visual object and web-image reverse matching engine"
+                source_type="External Search Index Link",
+                description="External reference link for manual reverse image query"
             ),
             PublicReference(
-                title="Yandex Visual Search",
+                title="Yandex Visual Search (External)",
                 url="https://yandex.com/images/search?rpt=imageview",
-                source_type="Search Index",
-                description="Facial landmark and duplicate image indexing network"
+                source_type="External Search Index Link",
+                description="External reference link for manual duplicate and landmark comparison"
             ),
             PublicReference(
-                title="TinEye Reverse Image Search",
+                title="TinEye Reverse Image Search (External)",
                 url="https://tineye.com/",
-                source_type="Search Index",
-                description="Exact duplicate and modified image derivative tracking index"
+                source_type="External Search Index Link",
+                description="External reference link for manual derivative search"
             )
         ]
 
@@ -1193,6 +1231,7 @@ class UniversalOrchestrator:
                 ]
             ),
             investigation_limitations=[
+                "Automated reverse image matching is not performed locally; external search engine query links are provided for manual analyst inspection.",
                 "Biometric facial recognition and facial identification matching are strictly restricted in compliance with ethics policies and privacy regulations.",
                 "Social media platforms routinely strip EXIF metadata upon upload; lack of EXIF does not indicate file tampering.",
                 "Reverse visual search engines require public web indexing and cannot discover private, unshared images."
