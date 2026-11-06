@@ -94,6 +94,12 @@ DISPOSABLE_EMAIL_DOMAINS = {
     "temp-mail.org", "dropmail.me", "maildrop.cc", "emailondeck.com"
 }
 
+PUBLIC_WEBMAIL_DOMAINS = {
+    "gmail.com", "googlemail.com", "outlook.com", "hotmail.com", "live.com", "msn.com",
+    "yahoo.com", "ymail.com", "rocketmail.com", "proton.me", "protonmail.com",
+    "icloud.com", "me.com", "mac.com", "aol.com", "zoho.com", "mail.com", "gmx.com"
+}
+
 EMAIL_REGEX = re.compile(r'^[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+$')
 
 def classify_target(query: str, manual_override: Optional[str] = None) -> str:
@@ -176,13 +182,17 @@ class UniversalOrchestrator:
                 identified_information={
                     "Submitted Target": email,
                     "Syntax RFC Compliant": False,
-                    "Format Status": "Malformed email format"
+                    "Format Status": "Malformed email format",
+                    "MX Routing Status": "not_performed",
+                    "MX Resolution Details": "Invalid RFC 5322 email syntax — MX lookup was not performed.",
+                    "MX Records": "Not Performed"
                 },
                 confidence_and_verification=ConfidenceStatus(
                     overall_level="High",
                     score=95,
                     breakdown=[
-                        ConfidenceBreakdown(factor="RFC Syntax Validation", assessment="Failed standard email structure", impact="Cautionary")
+                        ConfidenceBreakdown(factor="RFC Syntax Validation", assessment="Failed standard email structure", impact="Cautionary"),
+                        ConfidenceBreakdown(factor="DNS MX Verification", assessment="Not performed due to syntax failure", impact="Neutral")
                     ]
                 ),
                 investigation_limitations=[
@@ -194,55 +204,86 @@ class UniversalOrchestrator:
 
         username_part, domain_part = email.split("@", 1)
         is_disposable = domain_part in DISPOSABLE_EMAIL_DOMAINS
+        is_public_webmail = domain_part in PUBLIC_WEBMAIL_DOMAINS
 
-        # 2. DNS MX, SPF, DMARC Resolution via Fast, Resilient Public Nameservers
+        # 2. DNS MX, SPF, DMARC Resolution
         mx_records: List[str] = []
         spf_record: Optional[str] = None
         dmarc_record: Optional[str] = None
-        dns_resolver = dns.resolver.Resolver(configure=False)
-        dns_resolver.nameservers = ["1.1.1.1", "8.8.8.8", "1.0.0.1", "8.8.4.4"]
-        dns_resolver.timeout = 2.5
-        dns_resolver.lifetime = 2.5
+        mx_status: str = "not_performed"
+        mx_status_explanation: str = ""
 
-        try:
-            answers = dns_resolver.resolve(domain_part, 'MX')
-            for rdata in answers:
-                mx_records.append(str(rdata.exchange).rstrip('.'))
-        except Exception:
-            pass
+        if is_public_webmail:
+            mx_status = "suppressed_by_policy"
+            mx_status_explanation = (
+                f"Public webmail domain ({domain_part}) — mail provider classified directly by architectural signature; "
+                "deep DNS infrastructure expansion is suppressed by policy to prevent attributing shared multi-tenant gateways to individual targets."
+            )
+        else:
+            dns_resolver = dns.resolver.Resolver(configure=False)
+            dns_resolver.nameservers = ["1.1.1.1", "8.8.8.8", "1.0.0.1", "8.8.4.4"]
+            dns_resolver.timeout = 3.5
+            dns_resolver.lifetime = 3.5
 
-        try:
-            txt_answers = dns_resolver.resolve(domain_part, 'TXT')
-            for rdata in txt_answers:
-                txt_str = "".join([s.decode('utf-8', errors='ignore') for s in rdata.strings])
-                if txt_str.startswith("v=spf1"):
-                    spf_record = txt_str
-                    break
-        except Exception:
-            pass
+            try:
+                answers = dns_resolver.resolve(domain_part, 'MX')
+                for rdata in answers:
+                    mx_records.append(str(rdata.exchange).rstrip('.'))
+                if mx_records:
+                    mx_status = "resolved"
+                    mx_status_explanation = f"Successfully resolved {len(mx_records)} authoritative MX host(s) for domain."
+                else:
+                    mx_status = "resolved"
+                    mx_status_explanation = "Domain published zero active MX records."
+            except (dns.resolver.NXDOMAIN, dns.resolver.NoAnswer):
+                mx_status = "resolved"
+                mx_status_explanation = "Domain publishes no active MX records."
+            except Exception as e:
+                mx_status = "lookup_failed"
+                mx_status_explanation = f"DNS resolution failed or timed out: {type(e).__name__}"
 
-        try:
-            dmarc_answers = dns_resolver.resolve(f"_dmarc.{domain_part}", 'TXT')
-            for rdata in dmarc_answers:
-                txt_str = "".join([s.decode('utf-8', errors='ignore') for s in rdata.strings])
-                if txt_str.startswith("v=DMARC1"):
-                    dmarc_record = txt_str
-                    break
-        except Exception:
-            pass
+            try:
+                txt_answers = dns_resolver.resolve(domain_part, 'TXT')
+                for rdata in txt_answers:
+                    txt_str = "".join([s.decode('utf-8', errors='ignore') for s in rdata.strings])
+                    if txt_str.startswith("v=spf1"):
+                        spf_record = txt_str
+                        break
+            except Exception:
+                pass
+
+            try:
+                dmarc_answers = dns_resolver.resolve(f"_dmarc.{domain_part}", 'TXT')
+                for rdata in dmarc_answers:
+                    txt_str = "".join([s.decode('utf-8', errors='ignore') for s in rdata.strings])
+                    if txt_str.startswith("v=DMARC1"):
+                        dmarc_record = txt_str
+                        break
+            except Exception:
+                pass
 
         # 3. Provider Classification
         provider = "Custom / Private Mail Host"
         mx_joined = " ".join(mx_records).lower()
-        if "google" in mx_joined or "aspmx" in mx_joined or domain_part in ("google.com", "gmail.com", "googlemail.com"):
+        if domain_part in ("gmail.com", "googlemail.com"):
             provider = "Google Workspace / Gmail"
-        elif "outlook" in mx_joined or "protection.outlook.com" in mx_joined or domain_part in ("microsoft.com", "outlook.com", "hotmail.com", "live.com"):
+        elif domain_part in ("outlook.com", "hotmail.com", "live.com", "msn.com"):
             provider = "Microsoft 365 / Outlook"
-        elif "proton" in mx_joined or domain_part in ("proton.me", "protonmail.com"):
+        elif domain_part in ("proton.me", "protonmail.com"):
             provider = "Proton Mail (End-to-End Encrypted)"
-        elif "yahoodns" in mx_joined or domain_part in ("yahoo.com", "ymail.com"):
+        elif domain_part in ("yahoo.com", "ymail.com", "rocketmail.com"):
             provider = "Yahoo Mail"
-        elif "icloud" in mx_joined or domain_part in ("apple.com", "icloud.com", "me.com", "mac.com"):
+        elif domain_part in ("apple.com", "icloud.com", "me.com", "mac.com"):
+            provider = "Apple iCloud Mail"
+        elif "google" in mx_joined or "aspmx" in mx_joined or domain_part == "google.com":
+            provider = "Google Workspace / Gmail"
+        elif "outlook" in mx_joined or "protection.outlook.com" in mx_joined or domain_part == "microsoft.com":
+            provider = "Microsoft 365 / Outlook"
+        elif "proton" in mx_joined:
+            provider = "Proton Mail (End-to-End Encrypted)"
+        elif "yahoodns" in mx_joined:
+            provider = "Yahoo Mail"
+        elif "icloud" in mx_joined:
             provider = "Apple iCloud Mail"
         elif "zoho" in mx_joined or domain_part.startswith("zoho."):
             provider = "Zoho Mail"
@@ -386,9 +427,25 @@ class UniversalOrchestrator:
             ))
 
         # 6. Score & Breakdown
+        if mx_status == "suppressed_by_policy":
+            mx_assessment = f"Suppressed by policy ({provider} signature classified)"
+            mx_impact = "Positive"
+        elif mx_status == "resolved" and mx_records:
+            mx_assessment = f"Found {len(mx_records)} MX host(s)"
+            mx_impact = "Positive"
+        elif mx_status == "lookup_failed":
+            mx_assessment = "DNS resolution timed out or failed"
+            mx_impact = "Cautionary"
+        elif mx_status == "not_performed":
+            mx_assessment = "Not performed due to syntax failure"
+            mx_impact = "Neutral"
+        else:
+            mx_assessment = "No active MX records found"
+            mx_impact = "Cautionary"
+
         confidence_breakdown = [
             ConfidenceBreakdown(factor="RFC 5322 Syntax Check", assessment="Valid and properly structured", impact="Positive"),
-            ConfidenceBreakdown(factor="DNS MX Verification", assessment=f"Found {len(mx_records)} MX host(s)" if mx_records else "No active MX records found", impact="Positive" if mx_records else "Cautionary"),
+            ConfidenceBreakdown(factor="DNS MX Verification", assessment=mx_assessment, impact=mx_impact),
             ConfidenceBreakdown(factor="Disposable Provider Check", assessment="Legitimate domain (not disposable)" if not is_disposable else "Known disposable/temporary provider", impact="Positive" if not is_disposable else "Cautionary")
         ]
         if associated_profiles:
@@ -399,7 +456,7 @@ class UniversalOrchestrator:
             ))
 
         base_score = 75
-        if mx_records:
+        if mx_records or mx_status == "suppressed_by_policy":
             base_score += 10
         if is_disposable:
             base_score -= 20
@@ -407,18 +464,40 @@ class UniversalOrchestrator:
             base_score += 10
         confidence_score = max(20, min(95, base_score))
 
-        risk_level = "High" if is_disposable else ("Low" if mx_records else "Medium")
-        headline = f"Active {provider} Address ({email})" if (mx_records or provider != "Custom / Private Mail Host") else f"Unverified / Inactive Mail Host ({email})"
+        risk_level = "High" if is_disposable else ("Low" if (mx_records or mx_status == "suppressed_by_policy") else "Medium")
+        headline = f"Active {provider} Address ({email})" if (mx_records or mx_status == "suppressed_by_policy" or provider != "Custom / Private Mail Host") else f"Unverified / Inactive Mail Host ({email})"
+
+        if mx_status == "suppressed_by_policy":
+            mx_takeaway = f"Domain MX status: Suppressed by policy ({provider} classified by domain architecture without deep DNS expansion)."
+        elif mx_status == "resolved" and mx_records:
+            mx_takeaway = f"Domain MX status: Configured with {len(mx_records)} mail server(s)."
+        elif mx_status == "lookup_failed":
+            mx_takeaway = "Domain MX status: Lookup failed due to DNS timeout / unreachable nameservers."
+        elif mx_status == "not_performed":
+            mx_takeaway = "Domain MX status: Not performed."
+        else:
+            mx_takeaway = "Domain MX status: No active MX records detected."
 
         key_takeaways = [
             f"Email address belongs to {provider}.",
-            f"Domain MX status: {'Configured with ' + str(len(mx_records)) + ' mail server(s)' if mx_records else 'No active MX records detected'}.",
+            mx_takeaway,
             f"Disposable / Temporary mailbox: {'YES (Throwaway / Anonymous)' if is_disposable else 'NO (Persistent Domain)'}."
         ]
         if associated_profiles:
             key_takeaways.append(f"Linked to {len(associated_profiles)} public identity profile(s): {', '.join([p.platform for p in associated_profiles])}.")
         if spf_record or dmarc_record:
             key_takeaways.append(f"Security posture: {'SPF configured' if spf_record else ''} {'DMARC active' if dmarc_record else ''}.".strip())
+
+        limitations = [
+            "Direct inbox deliverability testing (SMTP VRFY) is restricted to avoid triggering anti-abuse intrusion flags.",
+            "Non-public profile information, private passwords, and encrypted account data cannot be accessed.",
+            "Compliance with ethical standards: no brute-force login or credential-stuffing tests are performed."
+        ]
+        if is_public_webmail:
+            limitations.append(
+                f"Public consumer webmail domain ({domain_part}): deep MX and infrastructure DNS expansion is suppressed by policy. "
+                f"The target is classified as {provider} based on domain architecture without querying shared multi-tenant infrastructure."
+            )
 
         duration = round(time.time() - start_time, 2)
         report = ConsolidatedReport(
@@ -439,9 +518,17 @@ class UniversalOrchestrator:
                 "Domain Name": domain_part,
                 "Mail Provider Classification": provider,
                 "Disposable Mail Service": "Yes (High Risk)" if is_disposable else "No (Legitimate Domain)",
-                "MX Records": ", ".join(mx_records) if mx_records else "None Detected",
-                "SPF Policy Published": "Yes" if spf_record else "No",
-                "DMARC Policy Published": "Yes" if dmarc_record else "No"
+                "MX Routing Status": mx_status,
+                "MX Resolution Details": mx_status_explanation,
+                "MX Records": (
+                    ", ".join(mx_records) if mx_status == "resolved" and mx_records
+                    else ("Suppressed by Policy (Webmail Domain)" if mx_status == "suppressed_by_policy"
+                    else ("Lookup Failed (DNS Timeout / Unreachable)" if mx_status == "lookup_failed"
+                    else ("None Published" if mx_status == "resolved" and not mx_records
+                    else "Not Performed")))
+                ),
+                "SPF Policy Published": "Yes" if spf_record else ("Suppressed (Webmail Domain)" if is_public_webmail else "No"),
+                "DMARC Policy Published": "Yes" if dmarc_record else ("Suppressed (Webmail Domain)" if is_public_webmail else "No")
             },
             associated_profiles=associated_profiles,
             contact_associations=contact_associations,
@@ -452,11 +539,7 @@ class UniversalOrchestrator:
                 score=confidence_score,
                 breakdown=confidence_breakdown
             ),
-            investigation_limitations=[
-                "Direct inbox deliverability testing (SMTP VRFY) is restricted to avoid triggering anti-abuse intrusion flags.",
-                "Non-public profile information, private passwords, and encrypted account data cannot be accessed.",
-                "Compliance with ethical standards: no brute-force login or credential-stuffing tests are performed."
-            ]
+            investigation_limitations=limitations
         )
         self._jobs[job_id] = report
         return report
