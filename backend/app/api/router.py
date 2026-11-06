@@ -383,27 +383,35 @@ async def export_report(payload: Dict[str, str]):
 
 # ----------------- SETTINGS & SECRETS -----------------
 
-from app.build_identity import get_build_commit_sha
+from app.build_identity import resolve_deployment_identity
 
 @router.get("/version")
 async def get_version():
+    ident = resolve_deployment_identity()
     return {
         "app_name": settings.app_name,
         "full_name": settings.full_name,
         "version": settings.version,
-        "commit_sha": get_build_commit_sha(),
+        "commit_sha": ident.commit_sha,
+        "identity_status": ident.identity_status,
+        "sources_agree": ident.sources_agree,
+        "identity_sources": ident.sources,
+        "identity_details": ident.details,
         "status": "operational",
         "domain": "https://pravision.pages.dev"
     }
 
 @router.get("/settings")
 async def get_settings():
+    ident = resolve_deployment_identity()
     return {
         "app_name": settings.app_name,
         "full_name": settings.full_name,
         "tagline": settings.tagline,
         "version": settings.version,
-        "commit_sha": get_build_commit_sha(),
+        "commit_sha": ident.commit_sha,
+        "identity_status": ident.identity_status,
+        "sources_agree": ident.sources_agree,
         "limits": settings.limits.dict(),
         "configured_api_keys": secret_vault.get_status_overview(),
         "persist_history": settings.persist_investigations,

@@ -47,6 +47,11 @@ backend/.tunnel_token*
 *.log
 playwright-report/
 frontend/playwright-report/
+# Build identity ephemeral metadata (generated at build/deploy time)
+backend/app/build_metadata.json
+build_metadata.json
+.commit_sha
+
 .DS_Store
 Thumbs.db
 

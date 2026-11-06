@@ -191,96 +191,190 @@ async def test_universal_api_endpoints_and_auth():
 
 import dns.resolver
 from unittest.mock import patch, MagicMock
-from app.build_identity import validate_commit_sha, get_build_commit_sha
+from app.build_identity import (
+    validate_commit_sha,
+    get_build_commit_sha,
+    resolve_deployment_identity,
+    generate_build_metadata
+)
 
 def test_build_identity_unit():
-    # 1. Valid 40-character SHA
-    valid_sha = "f206dfc3091382f20ab80a807e6a0363bed013d3"
-    assert validate_commit_sha(valid_sha) == valid_sha
-    assert validate_commit_sha(valid_sha.upper()) == valid_sha
+    valid_sha_1 = "b64ace5664432724530d7f080df1a7fb6b037810"
+    valid_sha_parent = "e010a0f8034b1add1882e33ccc26c794a11b079f"
+    valid_sha_env = "1111111111111111111111111111111111111111"
 
-    # 2. Invalid inputs
-    assert validate_commit_sha("86cf692") is None  # too short
-    assert validate_commit_sha("f206dfc3091382f20ab80a807e6a0363bed013d3extra") is None  # too long
+    # Strict 40-character regex validation
+    assert validate_commit_sha(valid_sha_1) == valid_sha_1
+    assert validate_commit_sha(valid_sha_1.upper()) == valid_sha_1
+    assert validate_commit_sha("86cf692") is None  # truncated
+    assert validate_commit_sha("b64ace5664432724530d7f080df1a7fb6b037810extra") is None  # too long
     assert validate_commit_sha("zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz") is None  # non-hex
     assert validate_commit_sha("") is None
     assert validate_commit_sha(None) is None
 
-    # 3. Environment variable resolution
-    with patch.dict("os.environ", {"GIT_COMMIT_SHA": valid_sha}):
-        assert get_build_commit_sha() == valid_sha
+    # Test 1: Correct metadata SHA matching Git (sources agree)
+    with patch.dict("os.environ", {}, clear=True), \
+         patch("pathlib.Path.is_file", return_value=True), \
+         patch("pathlib.Path.read_text", return_value=f'{{"commit_sha": "{valid_sha_1}"}}'), \
+         patch("subprocess.check_output", return_value=valid_sha_1.encode("utf-8")):
+        ident = resolve_deployment_identity()
+        assert ident.identity_status == "verified"
+        assert ident.sources_agree is True
+        assert ident.commit_sha == valid_sha_1
+        assert get_build_commit_sha() == valid_sha_1
 
-    # 4. Fallback to unknown when all sources fail
+    # Test 2: Parent SHA accidentally present in metadata while Git has current commit (mismatch detected!)
+    with patch.dict("os.environ", {}, clear=True), \
+         patch("pathlib.Path.is_file", return_value=True), \
+         patch("pathlib.Path.read_text", return_value=f'{{"commit_sha": "{valid_sha_parent}"}}'), \
+         patch("subprocess.check_output", return_value=valid_sha_1.encode("utf-8")):
+        ident = resolve_deployment_identity()
+        assert ident.identity_status == "mismatch"
+        assert ident.sources_agree is False
+        assert ident.commit_sha == "mismatch"
+        assert "conflict detected" in ident.details
+        assert get_build_commit_sha() == "mismatch"
+
+    # Test 3: Environment variable and metadata disagreement (mismatch detected!)
+    with patch.dict("os.environ", {"PRAVISION_COMMIT_SHA": valid_sha_env}), \
+         patch("pathlib.Path.is_file", return_value=True), \
+         patch("pathlib.Path.read_text", return_value=f'{{"commit_sha": "{valid_sha_1}"}}'), \
+         patch("subprocess.check_output", side_effect=Exception("No git")):
+        ident = resolve_deployment_identity()
+        assert ident.identity_status == "mismatch"
+        assert ident.sources_agree is False
+        assert ident.commit_sha == "mismatch"
+
+    # Test 4: Git unavailable (e.g. Docker container without .git), reads metadata
+    with patch.dict("os.environ", {}, clear=True), \
+         patch("pathlib.Path.is_file", return_value=True), \
+         patch("pathlib.Path.read_text", return_value=f'{{"commit_sha": "{valid_sha_1}"}}'), \
+         patch("subprocess.check_output", side_effect=Exception("No git")):
+        ident = resolve_deployment_identity()
+        assert ident.identity_status == "verified"
+        assert ident.sources_agree is True
+        assert ident.commit_sha == valid_sha_1
+
+    # Test 5: Invalid or missing SHA (all sources fail/empty)
     with patch.dict("os.environ", {}, clear=True), \
          patch("pathlib.Path.is_file", return_value=False), \
          patch("subprocess.check_output", side_effect=Exception("No git")):
-        assert get_build_commit_sha() == "unknown"
+        ident = resolve_deployment_identity()
+        assert ident.identity_status == "unavailable"
+        assert ident.sources_agree is False
+        assert ident.commit_sha == "unknown"
 
 
 @pytest.mark.asyncio
 async def test_email_mx_deterministic_mocking():
-    # 1. Successful MX Resolution
+    # Case A: Explicit MX Records
     mock_rdata = MagicMock()
+    mock_rdata.preference = 10
     mock_rdata.exchange = "mail.customdomain.org."
     with patch("dns.resolver.Resolver.resolve") as mock_resolve:
         mock_resolve.return_value = [mock_rdata]
         report = await universal_orchestrator.investigate("user@customdomain.org", manual_type="email")
         assert report.identified_information["MX Routing Status"] == "resolved"
+        assert report.identified_information["Mail Routing Assessment"] == "Explicit MX Configured"
         assert "mail.customdomain.org" in report.identified_information["MX Records"]
         assert "Successfully resolved 1 authoritative MX host(s)" in report.identified_information["MX Resolution Details"]
 
-    # 2. NoAnswer (Domain exists, but has no MX records)
-    with patch("dns.resolver.Resolver.resolve", side_effect=dns.resolver.NoAnswer):
-        report = await universal_orchestrator.investigate("user@existingdomain.org", manual_type="email")
-        assert report.identified_information["MX Routing Status"] == "resolved"
-        assert "NoAnswer" in report.identified_information["MX Records"]
-        assert "NoAnswer" in report.identified_information["MX Resolution Details"]
-        assert "Inactive Mail Domain" in report.summary.headline
+    # Case B: NoAnswer with A/AAAA address records (RFC 5321 implicit MX candidate)
+    def mock_resolve_noanswer_with_a(domain, qtype):
+        if qtype == "MX":
+            raise dns.resolver.NoAnswer()
+        elif qtype == "A":
+            return ["93.184.216.34"]
+        elif qtype == "AAAA":
+            raise dns.resolver.NoAnswer()
+        raise dns.resolver.NoAnswer()
 
-    # 3. NXDOMAIN (Domain does not exist in DNS)
+    with patch("dns.resolver.Resolver.resolve", side_effect=mock_resolve_noanswer_with_a):
+        report = await universal_orchestrator.investigate("user@existingdomain-with-a.org", manual_type="email")
+        assert report.identified_information["MX Routing Status"] == "resolved"
+        assert report.identified_information["Mail Routing Assessment"] == "Implicit MX Routing May Apply (RFC 5321 Section 5.1)"
+        assert "Address Records Found" in report.identified_information["MX Records"]
+        assert "RFC 5321 Section 5.1" in report.identified_information["MX Resolution Details"]
+        assert "No Explicit MX — Address Records Found" in report.summary.headline
+        # Verify it is NOT labeled as inactive
+        assert "Inactive Mail Domain" not in report.summary.headline
+
+    # Case C: NoAnswer without A/AAAA address records
+    def mock_resolve_noanswer_no_a(domain, qtype):
+        raise dns.resolver.NoAnswer()
+
+    with patch("dns.resolver.Resolver.resolve", side_effect=mock_resolve_noanswer_no_a):
+        report = await universal_orchestrator.investigate("user@existingdomain-no-records.org", manual_type="email")
+        assert report.identified_information["MX Routing Status"] == "resolved"
+        assert report.identified_information["Mail Routing Assessment"] == "No MX or Address Records Published"
+        assert "None Published (No MX or Address Records)" in report.identified_information["MX Records"]
+        assert "neither explicit MX records" in report.identified_information["MX Resolution Details"]
+        assert "Domain Lacks Mail Routing Records" in report.summary.headline
+
+    # Case D: Null MX (RFC 7505 - "MX 0 .")
+    mock_null_mx = MagicMock()
+    mock_null_mx.preference = 0
+    mock_null_mx.exchange = "."
+    with patch("dns.resolver.Resolver.resolve") as mock_resolve:
+        mock_resolve.return_value = [mock_null_mx]
+        report = await universal_orchestrator.investigate("user@null-mx-domain.org", manual_type="email")
+        assert report.identified_information["MX Routing Status"] == "resolved"
+        assert report.identified_information["Mail Routing Assessment"] == "Explicitly Declares No Mail Acceptance (RFC 7505 Null MX)"
+        assert "Null MX (RFC 7505 — Does Not Accept Mail)" in report.identified_information["MX Records"]
+        assert "Domain Rejects Mail (RFC 7505 Null MX)" in report.summary.headline
+        assert report.summary.risk_level == "High"
+
+    # Case E: NXDOMAIN (Queried domain does not exist in DNS)
     with patch("dns.resolver.Resolver.resolve", side_effect=dns.resolver.NXDOMAIN):
         report = await universal_orchestrator.investigate("user@nonexistent-domain-12345.xyz", manual_type="email")
         assert report.identified_information["MX Routing Status"] == "resolved"
-        assert "NXDOMAIN" in report.identified_information["MX Records"]
-        assert "NXDOMAIN" in report.identified_information["MX Resolution Details"]
+        assert report.identified_information["Mail Routing Assessment"] == "Non-Existent Domain (NXDOMAIN)"
+        assert "Domain Does Not Exist (NXDOMAIN)" in report.identified_information["MX Records"]
+        assert "does not exist in the Domain Name System" in report.identified_information["MX Resolution Details"]
+        # Verify it does not assert unregistered or expired
+        assert "unregistered or expired" not in report.identified_information["MX Resolution Details"]
         assert "Non-Existent Mail Domain" in report.summary.headline
         assert report.summary.risk_level == "High"
 
-    # 4. Timeout / Lookup Failed (Nameserver timeout or connection error)
+    # Case F: Timeout / Resolver Failure
     with patch("dns.resolver.Resolver.resolve", side_effect=dns.resolver.Timeout("Query timed out")):
         report = await universal_orchestrator.investigate("user@timeoutdomain.org", manual_type="email")
         assert report.identified_information["MX Routing Status"] == "lookup_failed"
-        assert "Lookup Failed" in report.identified_information["MX Records"]
-        assert "lookup_failed" in report.identified_information["MX Routing Status"]
+        assert report.identified_information["Mail Routing Assessment"] == "DNS Lookup Failed (Timeout / Transport Error)"
+        assert "Lookup Failed (DNS Timeout / Unreachable)" in report.identified_information["MX Records"]
+        assert "DNS resolution failed or timed out" in report.identified_information["MX Resolution Details"]
 
-    # 5. Suppressed by policy (Public consumer webmail like Gmail)
+    # Case G: Suppressed by policy (Public consumer webmail like Gmail)
     report_gmail = await universal_orchestrator.investigate("user@gmail.com", manual_type="email")
     assert report_gmail.identified_information["MX Routing Status"] == "suppressed_by_policy"
-    assert "Suppressed by Policy" in report_gmail.identified_information["MX Records"]
-    assert "deep DNS infrastructure expansion is suppressed by policy" in report_gmail.identified_information["MX Resolution Details"]
+    assert report_gmail.identified_information["Mail Routing Assessment"] == "Consumer Webmail Domain (Managed Infrastructure)"
+    assert "Suppressed by Policy (Webmail Domain)" in report_gmail.identified_information["MX Records"]
 
-    # 6. Not performed (Malformed email syntax)
+    # Case H: Not performed (Malformed email syntax)
     report_bad = await universal_orchestrator.investigate("not-an-email-at-all", manual_type="email")
     assert report_bad.identified_information["MX Routing Status"] == "not_performed"
+    assert report_bad.identified_information["Mail Routing Assessment"] == "Not Performed (Invalid RFC 5322 Syntax)"
     assert report_bad.identified_information["MX Records"] == "Not Performed"
 
 
 @pytest.mark.asyncio
 async def test_phone_carrier_terminology_and_validity():
-    report = await universal_orchestrator.investigate("14155552671", manual_type="phone")
+    report = await universal_orchestrator.investigate("+919820012345", manual_type="phone")
     assert report.target_type == "phone"
     assert report.status == "completed"
     
     info = report.identified_information
-    # Accurate carrier terminology
-    assert "Original Allocation Carrier" in info
-    assert "Current Carrier" in info
-    assert "Not verified" in info["Current Carrier"]
-    assert "Numbering-Plan Validity" in info
-    assert "Live Subscriber Status" in info
-    assert "Not verified" in info["Live Subscriber Status"]
+    # Accurate carrier terminology and authoritative allocation evidence
+    assert info["Original Allocation Carrier"] == "Vodafone"
+    assert "TRAI / DoT National Numbering Plan" in info["Carrier Allocation Source"]
+    assert "Google libphonenumber v9.0.42" in info["Carrier Allocation Source"]
+    assert "Regulator Numbering-Plan Allocation" in info["Carrier Data Type"]
+    assert info["Current Carrier"] == "Not verified (subject to Mobile Number Portability)"
+    assert info["Numbering-Plan Validity"] == "Formally valid ITU-T E.164 allocation"
+    assert info["Live Subscriber Status"] == "Not verified (subscriber activity/reachability unverified)"
     
-    # Limitations explain Mobile Number Portability (MNP)
+    # Limitations explain Mobile Number Portability (MNP) and offline dataset derivation
     limitations_text = " ".join(report.investigation_limitations)
     assert "Mobile Number Portability" in limitations_text
+    assert "TRAI/DoT National Numbering Plan" in limitations_text
 

@@ -62,6 +62,8 @@ def run_tests():
             region = info.get("Telecommunications Region")
             line_type = info.get("Line Type")
             orig_carrier = info.get("Original Allocation Carrier")
+            carrier_source = info.get("Carrier Allocation Source")
+            carrier_type = info.get("Carrier Data Type")
             curr_carrier = info.get("Current Carrier")
             validity = info.get("Numbering-Plan Validity")
             sub_status = info.get("Live Subscriber Status")
@@ -75,6 +77,8 @@ def run_tests():
                 "region": region,
                 "line_type": line_type,
                 "original_allocation_carrier": orig_carrier,
+                "carrier_allocation_source": carrier_source,
+                "carrier_data_type": carrier_type,
                 "current_carrier": curr_carrier,
                 "numbering_plan_validity": validity,
                 "live_subscriber_status": sub_status,
@@ -88,6 +92,8 @@ def run_tests():
             print(f"  Telecommunications Region: {region}")
             print(f"  Line Type: {line_type}")
             print(f"  Original Allocation Carrier: {orig_carrier}")
+            print(f"  Carrier Allocation Source: {carrier_source}")
+            print(f"  Carrier Data Type: {carrier_type}")
             print(f"  Current Carrier: {curr_carrier}")
             print(f"  Numbering-Plan Validity: {validity}")
             print(f"  Live Subscriber Status: {sub_status}")

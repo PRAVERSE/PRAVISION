@@ -54,6 +54,16 @@ running = True
 
 def start_backend():
     global backend_proc
+    # Generate / synchronize deployment build metadata before starting backend
+    try:
+        sys.path.insert(0, str(ROOT_DIR / "backend"))
+        from app.build_identity import generate_build_metadata, resolve_deployment_identity
+        meta = generate_build_metadata(output_dir=ROOT_DIR / "backend" / "app")
+        ident = resolve_deployment_identity()
+        logger.info(f"Build metadata synchronized: commit_sha={ident.commit_sha} status={ident.identity_status} agree={ident.sources_agree}")
+    except Exception as e:
+        logger.warning(f"Could not pre-generate build metadata: {e}")
+
     logger.info("Starting FastAPI backend process on 127.0.0.1:8000...")
     cmd = [
         str(PYTHON_EXE),

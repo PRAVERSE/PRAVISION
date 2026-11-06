@@ -32,9 +32,9 @@ def run_tests():
     test_emails = [
         ("Gmail (Public Webmail)", "test.user@gmail.com"),
         ("Google Corporate Domain (Custom MX)", "security@google.com"),
-        ("Proton Mail (Encrypted Webmail)", "contact@proton.me"),
+        ("Null MX Domain (RFC 7505 'MX 0 .')", "test@example.com"),
+        ("NoAnswer with A/AAAA (Implicit MX Candidate)", "contact@httpbin.org"),
         ("Custom Corporate (OpenAI)", "contact@openai.com"),
-        ("Domain Exists But No MX (NoAnswer)", "contact@httpbin.org"),
         ("Non-Existent Domain (NXDOMAIN)", "analyst@this-domain-definitely-does-not-exist-xyz-987.org"),
         ("Malformed Email Syntax", "malformed-address-no-at"),
     ]
@@ -54,32 +54,38 @@ def run_tests():
             headers={
                 "Content-Type": "application/json",
                 "Authorization": f"Bearer {token}",
-                "User-Agent": "Mozilla/5.0"
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) PRAVISION-ProdTest/2.5"
             }
         )
         with urllib.request.urlopen(query_req, timeout=35) as resp:
             data = json.loads(resp.read().decode("utf-8"))
             info = data.get("identified_information", {})
             mx_status = info.get("MX Routing Status")
+            mail_routing = info.get("Mail Routing Assessment")
             mx_records = info.get("MX Records")
             mx_details = info.get("MX Resolution Details")
             provider = info.get("Mail Provider Classification")
             status = data.get("status")
+            headline = data.get("summary", {}).get("headline")
 
             item = {
                 "label": label,
                 "email": email,
                 "status": status,
+                "headline": headline,
                 "provider": provider,
                 "mx_routing_status": mx_status,
+                "mail_routing_assessment": mail_routing,
                 "mx_records": mx_records,
                 "mx_resolution_details": mx_details,
                 "execution_seconds": data.get("duration_seconds")
             }
             results.append(item)
             print(f"  Status: {status}")
+            print(f"  Headline: {headline}")
             print(f"  Provider: {provider}")
             print(f"  MX Routing Status: {mx_status}")
+            print(f"  Mail Routing Assessment: {mail_routing}")
             print(f"  MX Records: {mx_records}")
             print(f"  MX Resolution Details: {mx_details}")
             print(f"  Execution Time: {data.get('duration_seconds')}s")
