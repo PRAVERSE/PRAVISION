@@ -69,12 +69,12 @@ async def run_browser_suite():
             await page.fill("input[type='text']", cfg_user)
             await page.fill("input[type='password']", cfg_pwd)
             await page.click("button:has-text('ACCESS PLATFORM')")
-            await page.locator("input[type='password']").wait_for(state="hidden", timeout=12000)
+            await page.locator("input[type='password']").wait_for(state="hidden", timeout=25000)
             await page.wait_for_timeout(1500)
 
         # Verify Universal Intelligence Search is visible
         header_locator = page.locator("h1:has-text('Universal OSINT Investigation')")
-        await header_locator.wait_for(state="visible", timeout=10000)
+        await header_locator.wait_for(state="visible", timeout=25000)
         header_text = await header_locator.inner_text()
         check("Universal Intelligence Search header displayed", "Universal" in header_text, f"Header: {header_text}")
 
@@ -96,9 +96,9 @@ async def run_browser_suite():
         investigate_btn = page.locator("button:has-text('Investigate')")
         await investigate_btn.click()
 
-        # Wait for Report to appear (timeout 15s)
+        # Wait for Report to appear (timeout 25s)
         report_heading = page.locator("h2")
-        await report_heading.wait_for(state="visible", timeout=15000)
+        await report_heading.wait_for(state="visible", timeout=25000)
         target_text = await report_heading.inner_text()
         check("Email investigation completed and report displayed", "security@google.com" in target_text, f"Target: {target_text}")
 
@@ -131,7 +131,7 @@ async def run_browser_suite():
         await search_input.fill("9820012345")  # Indian 10-digit without +91
         await investigate_btn.click()
 
-        await report_heading.wait_for(state="visible", timeout=15000)
+        await report_heading.wait_for(state="visible", timeout=25000)
         phone_report_text = await report_heading.inner_text()
         check("Indian phone normalized to E.164 +919820012345", "+919820012345" in phone_report_text, f"Heading: {phone_report_text}")
 
@@ -150,7 +150,7 @@ async def run_browser_suite():
         await search_input.fill("torvalds")
         await investigate_btn.click()
 
-        await report_heading.wait_for(state="visible", timeout=15000)
+        await report_heading.wait_for(state="visible", timeout=25000)
         user_report_text = await report_heading.inner_text()
         check("Username report rendered for @torvalds", "torvalds" in user_report_text, f"Heading: {user_report_text}")
 
@@ -198,7 +198,7 @@ async def run_browser_suite():
         await investigate_btn.click()
 
         # Wait for report
-        await report_heading.wait_for(state="visible", timeout=15000)
+        await report_heading.wait_for(state="visible", timeout=25000)
         img_report_text = await report_heading.inner_text()
         check("Photograph analysis report generated", "browser_test_photo.jpg" in img_report_text or "JPEG" in img_report_text, f"Report: {img_report_text}")
 

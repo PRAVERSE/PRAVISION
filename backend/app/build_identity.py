@@ -98,3 +98,4 @@ def generate_build_metadata(output_dir: Optional[Path] = None) -> Dict[str, Any]
         out_path = Path(output_dir) / "build_metadata.json"
         out_path.write_text(json.dumps(meta, indent=2), encoding="utf-8")
     return meta
+
