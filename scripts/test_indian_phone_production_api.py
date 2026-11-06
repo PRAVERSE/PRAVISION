@@ -60,6 +60,7 @@ def run_tests():
             e164 = info.get("E.164 Format")
             country_code = info.get("Country Calling Code")
             region = info.get("Telecommunications Region")
+            circle = info.get("Telecom Circle / LSA")
             line_type = info.get("Line Type")
             orig_carrier = info.get("Original Allocation Carrier")
             carrier_source = info.get("Carrier Allocation Source")
@@ -75,6 +76,7 @@ def run_tests():
                 "e164": e164,
                 "country_code": country_code,
                 "region": region,
+                "telecom_circle_lsa": circle,
                 "line_type": line_type,
                 "original_allocation_carrier": orig_carrier,
                 "carrier_allocation_source": carrier_source,
@@ -90,6 +92,7 @@ def run_tests():
             print(f"  E.164 Output: {e164}")
             print(f"  Country Calling Code: {country_code}")
             print(f"  Telecommunications Region: {region}")
+            print(f"  Telecom Circle / LSA: {circle}")
             print(f"  Line Type: {line_type}")
             print(f"  Original Allocation Carrier: {orig_carrier}")
             print(f"  Carrier Allocation Source: {carrier_source}")

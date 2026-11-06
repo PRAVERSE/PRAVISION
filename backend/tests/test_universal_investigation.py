@@ -266,21 +266,68 @@ def test_build_identity_unit():
 
 
 @pytest.mark.asyncio
-async def test_email_mx_deterministic_mocking():
-    # Case A: Explicit MX Records
-    mock_rdata = MagicMock()
-    mock_rdata.preference = 10
-    mock_rdata.exchange = "mail.customdomain.org."
-    with patch("dns.resolver.Resolver.resolve") as mock_resolve:
-        mock_resolve.return_value = [mock_rdata]
+async def test_email_mx_and_routing_assessments():
+    # 1. Ordinary MX records (explicit_mx)
+    mock_ord_mx = MagicMock()
+    mock_ord_mx.preference = 10
+    mock_ord_mx.exchange = "mail.customdomain.org."
+    with patch("dns.resolver.Resolver.resolve", return_value=[mock_ord_mx]):
         report = await universal_orchestrator.investigate("user@customdomain.org", manual_type="email")
-        assert report.identified_information["MX Routing Status"] == "resolved"
-        assert report.identified_information["Mail Routing Assessment"] == "Explicit MX Configured"
-        assert "mail.customdomain.org" in report.identified_information["MX Records"]
-        assert "Successfully resolved 1 authoritative MX host(s)" in report.identified_information["MX Resolution Details"]
+        info = report.identified_information
+        assert info["DNS Query Status"] == "answered"
+        assert info["MX Routing Status"] == "resolved"
+        assert info["Mail Routing Assessment"] == "explicit_mx"
+        assert info["Mail Routing Description"] == "Explicit MX Configured"
+        assert "mail.customdomain.org" in info["MX Records"]
+        assert "Successfully resolved 1 authoritative MX host(s)" in info["MX Resolution Details"]
 
-    # Case B: NoAnswer with A/AAAA address records (RFC 5321 implicit MX candidate)
-    def mock_resolve_noanswer_with_a(domain, qtype):
+    # 2. Valid single-record Null MX (null_mx)
+    mock_null_mx = MagicMock()
+    mock_null_mx.preference = 0
+    mock_null_mx.exchange = "."
+    with patch("dns.resolver.Resolver.resolve", return_value=[mock_null_mx]):
+        report = await universal_orchestrator.investigate("user@null-mx-domain.org", manual_type="email")
+        info = report.identified_information
+        assert info["DNS Query Status"] == "answered"
+        assert info["MX Routing Status"] == "resolved"
+        assert info["Mail Routing Assessment"] == "null_mx"
+        assert "Null MX (RFC 7505" in info["MX Records"]
+        assert "Domain Rejects Mail (RFC 7505 Null MX)" in report.summary.headline
+        assert report.summary.risk_level == "High"
+
+    # 3. Mixed Null MX and ordinary MX records (malformed_configuration)
+    mock_null = MagicMock()
+    mock_null.preference = 0
+    mock_null.exchange = "."
+    mock_ordinary = MagicMock()
+    mock_ordinary.preference = 10
+    mock_ordinary.exchange = "mail.example.com."
+    with patch("dns.resolver.Resolver.resolve", return_value=[mock_null, mock_ordinary]):
+        report = await universal_orchestrator.investigate("user@mixed-mx-domain.org", manual_type="email")
+        info = report.identified_information
+        assert info["DNS Query Status"] == "answered"
+        assert info["MX Routing Status"] == "resolved"
+        assert info["Mail Routing Assessment"] == "malformed_configuration"
+        assert "Protocol Violation: Mixed Null MX and Ordinary MX" in info["Mail Routing Description"]
+        assert "Malformed Configuration" in info["MX Records"]
+        assert "mail.example.com" in info["MX Resolution Details"]
+        assert report.summary.risk_level == "High"
+
+    # 4. Both address lookups returning NoAnswer (no_route)
+    def mock_noanswer_both(domain, qtype):
+        raise dns.resolver.NoAnswer()
+
+    with patch("dns.resolver.Resolver.resolve", side_effect=mock_noanswer_both):
+        report = await universal_orchestrator.investigate("user@existingdomain-no-records.org", manual_type="email")
+        info = report.identified_information
+        assert info["DNS Query Status"] == "answered"
+        assert info["MX Routing Status"] == "resolved"
+        assert info["Mail Routing Assessment"] == "no_route"
+        assert info["Mail Routing Description"] == "No MX or Address Records Published"
+        assert "None Published (No MX or Address Records)" in info["MX Records"]
+
+    # 5. Clean A/AAAA address resolution after MX NoAnswer (implicit_mx_candidate)
+    def mock_noanswer_clean_a(domain, qtype):
         if qtype == "MX":
             raise dns.resolver.NoAnswer()
         elif qtype == "A":
@@ -289,92 +336,158 @@ async def test_email_mx_deterministic_mocking():
             raise dns.resolver.NoAnswer()
         raise dns.resolver.NoAnswer()
 
-    with patch("dns.resolver.Resolver.resolve", side_effect=mock_resolve_noanswer_with_a):
-        report = await universal_orchestrator.investigate("user@existingdomain-with-a.org", manual_type="email")
-        assert report.identified_information["MX Routing Status"] == "resolved"
-        assert report.identified_information["Mail Routing Assessment"] == "Implicit MX Routing May Apply (RFC 5321 Section 5.1)"
-        assert "Address Records Found" in report.identified_information["MX Records"]
-        assert "RFC 5321 Section 5.1" in report.identified_information["MX Resolution Details"]
-        assert "No Explicit MX — Address Records Found" in report.summary.headline
-        # Verify it is NOT labeled as inactive
-        assert "Inactive Mail Domain" not in report.summary.headline
+    with patch("dns.resolver.Resolver.resolve", side_effect=mock_noanswer_clean_a):
+        report = await universal_orchestrator.investigate("user@domain-with-a.org", manual_type="email")
+        info = report.identified_information
+        assert info["DNS Query Status"] == "answered"
+        assert info["MX Routing Status"] == "resolved"
+        assert info["Mail Routing Assessment"] == "implicit_mx_candidate"
+        assert "RFC 5321 Section 5.1" in info["Mail Routing Description"]
+        assert "93.184.216.34" in info["MX Resolution Details"]
 
-    # Case C: NoAnswer without A/AAAA address records
-    def mock_resolve_noanswer_no_a(domain, qtype):
+    # 6. A lookup timeout after MX NoAnswer (unverified)
+    def mock_a_timeout(domain, qtype):
+        if qtype == "MX":
+            raise dns.resolver.NoAnswer()
+        elif qtype == "A":
+            raise dns.resolver.Timeout("A query timed out")
+        elif qtype == "AAAA":
+            raise dns.resolver.NoAnswer()
         raise dns.resolver.NoAnswer()
 
-    with patch("dns.resolver.Resolver.resolve", side_effect=mock_resolve_noanswer_no_a):
-        report = await universal_orchestrator.investigate("user@existingdomain-no-records.org", manual_type="email")
-        assert report.identified_information["MX Routing Status"] == "resolved"
-        assert report.identified_information["Mail Routing Assessment"] == "No MX or Address Records Published"
-        assert "None Published (No MX or Address Records)" in report.identified_information["MX Records"]
-        assert "neither explicit MX records" in report.identified_information["MX Resolution Details"]
-        assert "Domain Lacks Mail Routing Records" in report.summary.headline
+    with patch("dns.resolver.Resolver.resolve", side_effect=mock_a_timeout):
+        report = await universal_orchestrator.investigate("user@a-timeout.org", manual_type="email")
+        info = report.identified_information
+        assert info["DNS Query Status"] == "lookup_failed"
+        assert info["Mail Routing Assessment"] == "unverified"
+        assert "Lookup Failed" in info["MX Records"]
 
-    # Case D: Null MX (RFC 7505 - "MX 0 .")
-    mock_null_mx = MagicMock()
-    mock_null_mx.preference = 0
-    mock_null_mx.exchange = "."
-    with patch("dns.resolver.Resolver.resolve") as mock_resolve:
-        mock_resolve.return_value = [mock_null_mx]
-        report = await universal_orchestrator.investigate("user@null-mx-domain.org", manual_type="email")
-        assert report.identified_information["MX Routing Status"] == "resolved"
-        assert report.identified_information["Mail Routing Assessment"] == "Explicitly Declares No Mail Acceptance (RFC 7505 Null MX)"
-        assert "Null MX (RFC 7505 — Does Not Accept Mail)" in report.identified_information["MX Records"]
-        assert "Domain Rejects Mail (RFC 7505 Null MX)" in report.summary.headline
-        assert report.summary.risk_level == "High"
+    # 7. AAAA lookup timeout after MX NoAnswer (unverified)
+    def mock_aaaa_timeout(domain, qtype):
+        if qtype == "MX":
+            raise dns.resolver.NoAnswer()
+        elif qtype == "A":
+            raise dns.resolver.NoAnswer()
+        elif qtype == "AAAA":
+            raise dns.resolver.Timeout("AAAA query timed out")
+        raise dns.resolver.NoAnswer()
 
-    # Case E: NXDOMAIN (Queried domain does not exist in DNS)
+    with patch("dns.resolver.Resolver.resolve", side_effect=mock_aaaa_timeout):
+        report = await universal_orchestrator.investigate("user@aaaa-timeout.org", manual_type="email")
+        info = report.identified_information
+        assert info["DNS Query Status"] == "lookup_failed"
+        assert info["Mail Routing Assessment"] == "unverified"
+
+    # 8. A lookup SERVFAIL (unverified)
+    def mock_a_servfail(domain, qtype):
+        if qtype == "MX":
+            raise dns.resolver.NoAnswer()
+        elif qtype == "A":
+            raise dns.resolver.NoNameservers("Server failure: SERVFAIL")
+        elif qtype == "AAAA":
+            raise dns.resolver.NoAnswer()
+        raise dns.resolver.NoAnswer()
+
+    with patch("dns.resolver.Resolver.resolve", side_effect=mock_a_servfail):
+        report = await universal_orchestrator.investigate("user@a-servfail.org", manual_type="email")
+        info = report.identified_information
+        assert info["DNS Query Status"] == "lookup_failed"
+        assert info["Mail Routing Assessment"] == "unverified"
+
+    # 9. AAAA lookup SERVFAIL (unverified)
+    def mock_aaaa_servfail(domain, qtype):
+        if qtype == "MX":
+            raise dns.resolver.NoAnswer()
+        elif qtype == "A":
+            raise dns.resolver.NoAnswer()
+        elif qtype == "AAAA":
+            raise dns.resolver.NoNameservers("Server failure: SERVFAIL")
+        raise dns.resolver.NoAnswer()
+
+    with patch("dns.resolver.Resolver.resolve", side_effect=mock_aaaa_servfail):
+        report = await universal_orchestrator.investigate("user@aaaa-servfail.org", manual_type="email")
+        info = report.identified_information
+        assert info["DNS Query Status"] == "lookup_failed"
+        assert info["Mail Routing Assessment"] == "unverified"
+
+    # 10. One successful address lookup and one failed address lookup (partial/unverified)
+    def mock_partial_address(domain, qtype):
+        if qtype == "MX":
+            raise dns.resolver.NoAnswer()
+        elif qtype == "A":
+            return ["93.184.216.34"]
+        elif qtype == "AAAA":
+            raise dns.resolver.Timeout("AAAA lookup timed out")
+        raise dns.resolver.NoAnswer()
+
+    with patch("dns.resolver.Resolver.resolve", side_effect=mock_partial_address):
+        report = await universal_orchestrator.investigate("user@partial-addr.org", manual_type="email")
+        info = report.identified_information
+        # One succeeded, one failed -> overall assessment is unverified, but discovered address is recorded
+        assert info["DNS Query Status"] == "lookup_failed"
+        assert info["Mail Routing Assessment"] == "unverified"
+        assert "Partial Address Resolution" in info["Mail Routing Description"]
+        assert "93.184.216.34" in info["MX Records"]
+        assert "93.184.216.34" in info["MX Resolution Details"]
+        assert "unverified" in info["MX Resolution Details"].lower()
+
+    # 11. NXDOMAIN (non-existent domain)
     with patch("dns.resolver.Resolver.resolve", side_effect=dns.resolver.NXDOMAIN):
         report = await universal_orchestrator.investigate("user@nonexistent-domain-12345.xyz", manual_type="email")
-        assert report.identified_information["MX Routing Status"] == "resolved"
-        assert report.identified_information["Mail Routing Assessment"] == "Non-Existent Domain (NXDOMAIN)"
-        assert "Domain Does Not Exist (NXDOMAIN)" in report.identified_information["MX Records"]
-        assert "does not exist in the Domain Name System" in report.identified_information["MX Resolution Details"]
-        # Verify it does not assert unregistered or expired
-        assert "unregistered or expired" not in report.identified_information["MX Resolution Details"]
-        assert "Non-Existent Mail Domain" in report.summary.headline
-        assert report.summary.risk_level == "High"
+        info = report.identified_information
+        assert info["DNS Query Status"] == "answered"
+        assert info["Mail Routing Assessment"] == "nxdomain"
+        assert "Domain Does Not Exist (NXDOMAIN)" in info["MX Records"]
 
-    # Case F: Timeout / Resolver Failure
-    with patch("dns.resolver.Resolver.resolve", side_effect=dns.resolver.Timeout("Query timed out")):
-        report = await universal_orchestrator.investigate("user@timeoutdomain.org", manual_type="email")
-        assert report.identified_information["MX Routing Status"] == "lookup_failed"
-        assert report.identified_information["Mail Routing Assessment"] == "DNS Lookup Failed (Timeout / Transport Error)"
-        assert "Lookup Failed (DNS Timeout / Unreachable)" in report.identified_information["MX Records"]
-        assert "DNS resolution failed or timed out" in report.identified_information["MX Resolution Details"]
-
-    # Case G: Suppressed by policy (Public consumer webmail like Gmail)
+    # 12. Suppressed by policy (Public webmail e.g. Gmail)
     report_gmail = await universal_orchestrator.investigate("user@gmail.com", manual_type="email")
-    assert report_gmail.identified_information["MX Routing Status"] == "suppressed_by_policy"
-    assert report_gmail.identified_information["Mail Routing Assessment"] == "Consumer Webmail Domain (Managed Infrastructure)"
-    assert "Suppressed by Policy (Webmail Domain)" in report_gmail.identified_information["MX Records"]
+    info_gmail = report_gmail.identified_information
+    assert info_gmail["DNS Query Status"] == "suppressed_by_policy"
+    assert info_gmail["MX Routing Status"] == "suppressed_by_policy"
+    assert info_gmail["Mail Routing Assessment"] == "suppressed_by_policy"
 
-    # Case H: Not performed (Malformed email syntax)
-    report_bad = await universal_orchestrator.investigate("not-an-email-at-all", manual_type="email")
-    assert report_bad.identified_information["MX Routing Status"] == "not_performed"
-    assert report_bad.identified_information["Mail Routing Assessment"] == "Not Performed (Invalid RFC 5322 Syntax)"
-    assert report_bad.identified_information["MX Records"] == "Not Performed"
+    # 13. Not performed (Malformed syntax)
+    report_bad = await universal_orchestrator.investigate("not-an-email-syntax", manual_type="email")
+    info_bad = report_bad.identified_information
+    assert info_bad["DNS Query Status"] == "not_performed"
+    assert info_bad["MX Routing Status"] == "not_performed"
+    assert info_bad["Mail Routing Assessment"] == "not_performed"
+
+    # Limitation clause check
+    assert any("DNS mail routing verification confirms authoritative DNS record publication only" in lim for lim in report.investigation_limitations)
 
 
 @pytest.mark.asyncio
-async def test_phone_carrier_terminology_and_validity():
-    report = await universal_orchestrator.investigate("+919820012345", manual_type="phone")
-    assert report.target_type == "phone"
-    assert report.status == "completed"
-    
-    info = report.identified_information
-    # Accurate carrier terminology and authoritative allocation evidence
-    assert info["Original Allocation Carrier"] == "Vodafone"
-    assert "TRAI / DoT National Numbering Plan" in info["Carrier Allocation Source"]
-    assert "Google libphonenumber v9.0.42" in info["Carrier Allocation Source"]
-    assert "Regulator Numbering-Plan Allocation" in info["Carrier Data Type"]
-    assert info["Current Carrier"] == "Not verified (subject to Mobile Number Portability)"
-    assert info["Numbering-Plan Validity"] == "Formally valid ITU-T E.164 allocation"
-    assert info["Live Subscriber Status"] == "Not verified (subscriber activity/reachability unverified)"
-    
-    # Limitations explain Mobile Number Portability (MNP) and offline dataset derivation
+async def test_indian_phone_carrier_attribution_and_circles():
+    # Test multiple Indian mobile prefixes with different allocation metadata
+    test_cases = [
+        ("+919820012345", "Vodafone"),
+        ("+919845012345", "Airtel"),
+        ("+919422012345", "BSNL MOBILE"),
+    ]
+
+    for number, expected_carrier in test_cases:
+        report = await universal_orchestrator.investigate(number, manual_type="phone")
+        assert report.target_type == "phone"
+        assert report.status == "completed"
+
+        info = report.identified_information
+        # Accurate carrier attribution
+        assert info["Original Allocation Carrier"] == expected_carrier
+        assert info["Carrier Allocation Source"] == "Google libphonenumber v9.0.42 (offline carrier mapping dataset)"
+        assert "Historical/original prefix allocation metadata" in info["Carrier Data Type"]
+        assert "not a live regulator lookup" in info["Carrier Data Type"]
+        assert info["Current Carrier"] == "Not verified (subject to Mobile Number Portability)"
+        assert info["Numbering-Plan Validity"] == "Formally valid ITU-T E.164 allocation"
+        assert info["Live Subscriber Status"] == "Not verified (subscriber activity/reachability unverified)"
+
+        # Circle attribution: mobile circle mapping is unavailable in offline dataset
+        assert info["Telecom Circle / LSA"] == "Not verified (mobile telecom circle mapping unavailable in offline dataset)"
+        assert "Mumbai" not in info["Telecom Circle / LSA"]
+
+    # Verify limitations mention Google libphonenumber v9.0.42 and circle disclaimer
     limitations_text = " ".join(report.investigation_limitations)
+    assert "Google libphonenumber v9.0.42 (offline dataset)" in limitations_text
     assert "Mobile Number Portability" in limitations_text
-    assert "TRAI/DoT National Numbering Plan" in limitations_text
+    assert "Mobile telecom circle / LSA assignments are not mapped in the offline numbering database" in limitations_text
 

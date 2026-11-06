@@ -124,6 +124,34 @@ def classify_target(query: str, manual_override: Optional[str] = None) -> str:
     return "username"
 
 
+def query_address_record(resolver: dns.resolver.Resolver, domain: str, rtype: str) -> Tuple[str, List[str], Optional[str]]:
+    """
+    Independently queries an address record (A or AAAA) for RFC 5321 implicit MX fallback.
+    Returns: (status, records, error_detail)
+    status: 'answered', 'no_answer', 'nxdomain', 'timeout', 'servfail', 'lookup_failed'
+    """
+    try:
+        ans = resolver.resolve(domain, rtype)
+        records = [str(r).strip() for r in ans if str(r).strip()]
+        if records:
+            return "answered", records, None
+        return "no_answer", [], "No records returned"
+    except dns.resolver.NoAnswer:
+        return "no_answer", [], "NoAnswer (domain exists, but no address record of this type)"
+    except dns.resolver.NXDOMAIN:
+        return "nxdomain", [], "NXDOMAIN (domain does not exist)"
+    except dns.resolver.Timeout:
+        return "timeout", [], "DNS query timed out"
+    except Exception as e:
+        err_msg = str(e).lower()
+        err_type = type(e).__name__.lower()
+        if "servfail" in err_msg or "servfail" in err_type or "serverfailure" in err_type:
+            return "servfail", [], f"SERVFAIL: {e}"
+        if isinstance(e, dns.resolver.NoNameservers):
+            return "servfail", [], f"SERVFAIL / No nameservers answered: {e}"
+        return "lookup_failed", [], f"Lookup failed ({type(e).__name__}): {e}"
+
+
 class UniversalOrchestrator:
     """
     Central, resilient OSINT investigation orchestrator providing fast,
@@ -183,8 +211,10 @@ class UniversalOrchestrator:
                     "Submitted Target": email,
                     "Syntax RFC Compliant": False,
                     "Format Status": "Malformed email format",
+                    "DNS Query Status": "not_performed",
                     "MX Routing Status": "not_performed",
-                    "Mail Routing Assessment": "Not Performed (Invalid RFC 5322 Syntax)",
+                    "Mail Routing Assessment": "not_performed",
+                    "Mail Routing Description": "Not Performed (Invalid RFC 5322 Syntax)",
                     "MX Resolution Details": "Invalid RFC 5322 email syntax — MX lookup was not performed.",
                     "MX Records": "Not Performed"
                 },
@@ -211,9 +241,12 @@ class UniversalOrchestrator:
         mx_records: List[str] = []
         spf_record: Optional[str] = None
         dmarc_record: Optional[str] = None
+        dns_query_status: str = "not_performed"
         mx_status: str = "not_performed"
-        mail_routing_assessment: str = "Unassessed"
+        mail_routing_assessment: str = "unverified"
+        mail_routing_description: str = "Unassessed"
         mx_status_explanation: str = ""
+        mx_records_str: str = "Not Performed"
         is_nxdomain: bool = False
         is_noanswer: bool = False
         is_null_mx: bool = False
@@ -221,95 +254,169 @@ class UniversalOrchestrator:
         address_records: List[str] = []
 
         if is_public_webmail:
+            dns_query_status = "suppressed_by_policy"
             mx_status = "suppressed_by_policy"
-            mail_routing_assessment = "Consumer Webmail Domain (Managed Infrastructure)"
+            mail_routing_assessment = "suppressed_by_policy"
+            mail_routing_description = "Consumer Webmail Domain (Managed Infrastructure)"
             mx_status_explanation = (
                 f"Public webmail domain ({domain_part}) — mail provider classified directly by architectural signature; "
                 "deep DNS infrastructure expansion is suppressed by policy to prevent attributing shared multi-tenant gateways to individual targets."
             )
+            mx_records_str = "Suppressed by Policy (Webmail Domain)"
         else:
-            dns_resolver = dns.resolver.Resolver(configure=False)
-            dns_resolver.nameservers = ["1.1.1.1", "8.8.8.8", "1.0.0.1", "8.8.4.4"]
+            try:
+                dns_resolver = dns.resolver.Resolver()
+                for ns in ["1.1.1.1", "8.8.8.8", "1.0.0.1", "8.8.4.4"]:
+                    if ns not in dns_resolver.nameservers:
+                        dns_resolver.nameservers.append(ns)
+            except Exception:
+                dns_resolver = dns.resolver.Resolver(configure=False)
+                dns_resolver.nameservers = ["1.1.1.1", "8.8.8.8", "1.0.0.1", "8.8.4.4"]
             dns_resolver.timeout = 3.5
             dns_resolver.lifetime = 3.5
 
             try:
                 answers = dns_resolver.resolve(domain_part, 'MX')
+                has_null_mx = False
+                ordinary_mx_records: List[str] = []
+
                 for rdata in answers:
                     pref = getattr(rdata, 'preference', None)
                     exchange_raw = str(getattr(rdata, 'exchange', '')).strip()
                     exchange_clean = exchange_raw.rstrip('.')
                     # Detect RFC 7505 Null MX record ("MX 0 .")
                     if pref == 0 and (exchange_clean == "" or exchange_raw == "."):
-                        is_null_mx = True
-                        break
-                    if exchange_clean:
-                        mx_records.append(exchange_clean)
+                        has_null_mx = True
+                    else:
+                        if exchange_clean:
+                            ordinary_mx_records.append(exchange_clean)
 
-                if is_null_mx:
+                if has_null_mx and not ordinary_mx_records:
+                    is_null_mx = True
+                    dns_query_status = "answered"
                     mx_status = "resolved"
-                    mail_routing_assessment = "Explicitly Declares No Mail Acceptance (RFC 7505 Null MX)"
+                    mail_routing_assessment = "null_mx"
+                    mail_routing_description = "Explicitly Declares No Mail Acceptance (RFC 7505 Null MX)"
                     mx_status_explanation = (
                         f"Domain '{domain_part}' publishes an explicit RFC 7505 Null MX record ('MX 0 .'), "
                         "formally declaring that it does not accept incoming email on any server."
                     )
-                elif mx_records:
+                    mx_records_str = "Null MX (RFC 7505 — Does Not Accept Mail)"
+                elif has_null_mx and ordinary_mx_records:
+                    dns_query_status = "answered"
                     mx_status = "resolved"
-                    mail_routing_assessment = "Explicit MX Configured"
-                    mx_status_explanation = f"Successfully resolved {len(mx_records)} authoritative MX host(s) for domain."
+                    mail_routing_assessment = "malformed_configuration"
+                    mail_routing_description = "Protocol Violation: Mixed Null MX and Ordinary MX (RFC 7505 Section 3)"
+                    mx_status_explanation = (
+                        f"Domain '{domain_part}' publishes both an RFC 7505 Null MX record ('MX 0 .') and ordinary MX records "
+                        f"({', '.join(ordinary_mx_records)}). RFC 7505 Section 3 explicitly prohibits publishing any other MX records alongside Null MX. "
+                        "Mail transfer agents may reject or behave unpredictably when encountering this malformed configuration."
+                    )
+                    mx_records_str = f"Malformed Configuration (Mixed Null MX and Ordinary MX: {', '.join(ordinary_mx_records)})"
+                    mx_records = ordinary_mx_records
+                elif ordinary_mx_records:
+                    dns_query_status = "answered"
+                    mx_status = "resolved"
+                    mail_routing_assessment = "explicit_mx"
+                    mail_routing_description = "Explicit MX Configured"
+                    mx_status_explanation = f"Successfully resolved {len(ordinary_mx_records)} authoritative MX host(s) for domain."
+                    mx_records = ordinary_mx_records
+                    mx_records_str = ", ".join(ordinary_mx_records)
                 else:
                     is_noanswer = True
             except dns.resolver.NoAnswer:
                 is_noanswer = True
             except dns.resolver.NXDOMAIN:
                 is_nxdomain = True
+                dns_query_status = "answered"
                 mx_status = "resolved"
-                mail_routing_assessment = "Non-Existent Domain (NXDOMAIN)"
+                mail_routing_assessment = "nxdomain"
+                mail_routing_description = "Non-Existent Domain (NXDOMAIN)"
                 mx_status_explanation = (
                     f"Queried domain '{domain_part}' does not exist in the Domain Name System "
                     "(NXDOMAIN authoritative response). Senders cannot route mail to non-existent domains."
                 )
-            except Exception as e:
+                mx_records_str = "Domain Does Not Exist (NXDOMAIN)"
+            except dns.resolver.Timeout:
+                dns_query_status = "lookup_failed"
                 mx_status = "lookup_failed"
-                mail_routing_assessment = "DNS Lookup Failed (Timeout / Transport Error)"
+                mail_routing_assessment = "unverified"
+                mail_routing_description = "DNS Lookup Failed (Timeout / Transport Error)"
                 mx_status_explanation = (
-                    f"DNS resolution failed or timed out connecting to authoritative nameservers ({type(e).__name__}). "
+                    "DNS resolution timed out connecting to authoritative nameservers. "
                     "DNS evidence was unresolvable; this is not a confirmation of non-existence or zero records."
                 )
+                mx_records_str = "Lookup Failed (DNS Timeout / Unreachable)"
+            except Exception as e:
+                dns_query_status = "lookup_failed"
+                mx_status = "lookup_failed"
+                mail_routing_assessment = "unverified"
+                mail_routing_description = f"DNS Lookup Failed ({type(e).__name__})"
+                mx_status_explanation = (
+                    f"DNS resolution failed connecting to authoritative nameservers ({type(e).__name__}). "
+                    "DNS evidence was unresolvable; this is not a confirmation of non-existence or zero records."
+                )
+                mx_records_str = f"Lookup Failed ({type(e).__name__})"
 
             # RFC 5321 Section 5.1: If no explicit MX record exists (NoAnswer), evaluate address records (implicit MX)
             if is_noanswer:
-                mx_status = "resolved"
-                try:
-                    a_ans = dns_resolver.resolve(domain_part, 'A')
-                    for a_rec in a_ans:
-                        address_records.append(str(a_rec))
-                    has_address_records = True
-                except Exception:
-                    pass
+                a_status, a_records, a_err = query_address_record(dns_resolver, domain_part, 'A')
+                aaaa_status, aaaa_records, aaaa_err = query_address_record(dns_resolver, domain_part, 'AAAA')
+                address_records = a_records + aaaa_records
 
-                try:
-                    aaaa_ans = dns_resolver.resolve(domain_part, 'AAAA')
-                    for aaaa_rec in aaaa_ans:
-                        address_records.append(str(aaaa_rec))
-                    has_address_records = True
-                except Exception:
-                    pass
+                has_err = a_status in ("timeout", "servfail", "lookup_failed") or aaaa_status in ("timeout", "servfail", "lookup_failed")
+                has_ans = a_status == "answered" or aaaa_status == "answered"
 
-                if has_address_records:
-                    mail_routing_assessment = "Implicit MX Routing May Apply (RFC 5321 Section 5.1)"
+                if has_ans and not has_err:
+                    has_address_records = True
+                    dns_query_status = "answered"
+                    mx_status = "resolved"
+                    mail_routing_assessment = "implicit_mx_candidate"
+                    mail_routing_description = "Implicit MX Routing May Apply (RFC 5321 Section 5.1)"
                     mx_status_explanation = (
                         f"No explicit MX record published for '{domain_part}'. However, authoritative address records "
                         f"(A/AAAA: {', '.join(address_records[:3])}) were resolved. In accordance with RFC 5321 Section 5.1, "
                         "mail transfer agents may attempt delivery using implicit MX routing directed to the domain's host IP addresses. "
                         "Actual SMTP server responsiveness or inbox deliverability has not been tested."
                     )
+                    mx_records_str = f"No Explicit MX (Address Records Found: {', '.join(address_records[:2])})"
+                elif has_ans and has_err:
+                    has_address_records = True
+                    dns_query_status = "lookup_failed"
+                    mx_status = "resolved"
+                    mail_routing_assessment = "unverified"
+                    mail_routing_description = "Partial Address Resolution (Unverified Implicit MX Assessment)"
+                    err_info = aaaa_err if a_status == "answered" else a_err
+                    failed_type = "AAAA" if a_status == "answered" else "A"
+                    mx_status_explanation = (
+                        f"No explicit MX record published for '{domain_part}'. Address resolution was partial: "
+                        f"successfully resolved address records ({', '.join(address_records)}), but "
+                        f"{failed_type} query failed ({err_info}). "
+                        "Due to incomplete address query resolution, the mail routing assessment is unverified. "
+                        "Implicit MX delivery may be attempted by MTAs to the discovered addresses, but full host routing cannot be guaranteed."
+                    )
+                    mx_records_str = f"Partial Address Records (Found: {', '.join(address_records[:2])}; Fallback Incomplete)"
+                elif not has_ans and has_err:
+                    dns_query_status = "lookup_failed"
+                    mx_status = "lookup_failed"
+                    mail_routing_assessment = "unverified"
+                    mail_routing_description = "DNS Address Lookup Failed (Timeout / Server Error During Fallback)"
+                    mx_status_explanation = (
+                        f"Domain '{domain_part}' returned NoAnswer for MX records, but subsequent RFC 5321 address lookups (A/AAAA) "
+                        f"failed or timed out (A: {a_err}; AAAA: {aaaa_err}). Cannot determine whether address records exist."
+                    )
+                    mx_records_str = "Lookup Failed (DNS Timeout / Error on Address Fallback)"
                 else:
-                    mail_routing_assessment = "No MX or Address Records Published"
+                    # Both are no_answer
+                    dns_query_status = "answered"
+                    mx_status = "resolved"
+                    mail_routing_assessment = "no_route"
+                    mail_routing_description = "No MX or Address Records Published"
                     mx_status_explanation = (
                         f"Domain '{domain_part}' exists in DNS, but returned neither explicit MX records (NoAnswer) "
                         "nor reachable A/AAAA address records. Mail transfer agents have no valid destination host to route email."
                     )
+                    mx_records_str = "None Published (No MX or Address Records)"
 
             try:
                 txt_answers = dns_resolver.resolve(domain_part, 'TXT')
@@ -502,19 +609,25 @@ class UniversalOrchestrator:
         elif is_null_mx:
             mx_assessment = "Domain explicitly rejects email (RFC 7505 Null MX)"
             mx_impact = "Cautionary"
-        elif mx_status == "resolved" and mx_records:
+        elif mail_routing_assessment == "malformed_configuration":
+            mx_assessment = "Mixed RFC 7505 Null MX with ordinary MX records (protocol violation)"
+            mx_impact = "Cautionary"
+        elif mail_routing_assessment == "explicit_mx":
             mx_assessment = f"Found {len(mx_records)} authoritative MX host(s)"
             mx_impact = "Positive"
-        elif is_noanswer and has_address_records:
+        elif mail_routing_assessment == "implicit_mx_candidate":
             mx_assessment = "No explicit MX record found; A/AAAA address records available (implicit MX routing candidate)"
             mx_impact = "Neutral"
-        elif is_noanswer and not has_address_records:
+        elif mail_routing_assessment == "unverified" and has_address_records:
+            mx_assessment = "Partial address resolution; some address queries failed (unverified implicit MX assessment)"
+            mx_impact = "Neutral"
+        elif mail_routing_assessment == "no_route":
             mx_assessment = "Domain exists, but publishes neither MX nor address records"
             mx_impact = "Cautionary"
         elif is_nxdomain:
             mx_assessment = "Queried domain does not exist in DNS (NXDOMAIN)"
             mx_impact = "Cautionary"
-        elif mx_status == "lookup_failed":
+        elif mx_status == "lookup_failed" or mail_routing_assessment == "unverified":
             mx_assessment = "DNS resolution timed out or failed"
             mx_impact = "Cautionary"
         elif mx_status == "not_performed":
@@ -537,20 +650,22 @@ class UniversalOrchestrator:
             ))
 
         base_score = 75
-        if (mx_records or mx_status == "suppressed_by_policy") and not is_nxdomain and not is_noanswer and not is_null_mx:
+        if (mx_records or mx_status == "suppressed_by_policy") and not is_nxdomain and not is_noanswer and not is_null_mx and mail_routing_assessment != "malformed_configuration":
             base_score += 10
-        if is_disposable or is_nxdomain or is_null_mx:
+        if is_disposable or is_nxdomain or is_null_mx or mail_routing_assessment == "malformed_configuration":
             base_score -= 25
-        elif is_noanswer and not has_address_records:
+        elif mail_routing_assessment == "no_route":
             base_score -= 15
-        elif is_noanswer and has_address_records:
+        elif mail_routing_assessment == "implicit_mx_candidate":
             base_score -= 5
+        elif mail_routing_assessment == "unverified":
+            base_score -= 10
         if associated_profiles:
             base_score += 10
         confidence_score = max(20, min(95, base_score))
 
         risk_level = (
-            "High" if (is_disposable or is_nxdomain or is_null_mx or (is_noanswer and not has_address_records))
+            "High" if (is_disposable or is_nxdomain or is_null_mx or mail_routing_assessment in ("no_route", "malformed_configuration"))
             else ("Low" if (mx_records or mx_status == "suppressed_by_policy") else "Medium")
         )
 
@@ -558,10 +673,16 @@ class UniversalOrchestrator:
             headline = f"Non-Existent Mail Domain ({email})"
         elif is_null_mx:
             headline = f"Domain Rejects Mail (RFC 7505 Null MX) ({email})"
-        elif is_noanswer and has_address_records:
+        elif mail_routing_assessment == "malformed_configuration":
+            headline = f"Malformed Mail Routing Configuration ({email})"
+        elif mail_routing_assessment == "implicit_mx_candidate":
             headline = f"No Explicit MX — Address Records Found ({email})"
-        elif is_noanswer and not has_address_records:
+        elif mail_routing_assessment == "unverified" and has_address_records:
+            headline = f"Partial Address Records Found ({email})"
+        elif mail_routing_assessment == "no_route":
             headline = f"Domain Lacks Mail Routing Records ({email})"
+        elif mail_routing_assessment == "unverified":
+            headline = f"Unverified Mail Routing ({email})"
         elif mx_records or mx_status == "suppressed_by_policy" or provider != "Custom / Private Mail Host":
             headline = f"Active {provider} Address ({email})"
         else:
@@ -571,15 +692,19 @@ class UniversalOrchestrator:
             mx_takeaway = f"Domain MX status: Suppressed by policy ({provider} classified by domain architecture without deep DNS expansion)."
         elif is_null_mx:
             mx_takeaway = "Domain MX status: Domain explicitly declares that it does not accept email via RFC 7505 Null MX ('MX 0 .')."
-        elif mx_status == "resolved" and mx_records:
+        elif mail_routing_assessment == "malformed_configuration":
+            mx_takeaway = f"Domain MX status: Malformed configuration — domain publishes both RFC 7505 Null MX and ordinary MX ({', '.join(mx_records)})."
+        elif mail_routing_assessment == "explicit_mx":
             mx_takeaway = f"Domain MX status: Configured with {len(mx_records)} authoritative mail server(s)."
-        elif is_noanswer and has_address_records:
+        elif mail_routing_assessment == "implicit_mx_candidate":
             mx_takeaway = f"Domain MX status: No explicit MX record found; authoritative address records (A/AAAA: {', '.join(address_records[:3])}) resolved where implicit MX routing (RFC 5321) may apply. SMTP deliverability unverified."
-        elif is_noanswer and not has_address_records:
-            mx_takeaway = f"Domain MX status: Domain exists in DNS but publishes neither explicit MX records nor address records."
+        elif mail_routing_assessment == "unverified" and has_address_records:
+            mx_takeaway = f"Domain MX status: Address resolution was partial ({', '.join(address_records[:2])} found, but secondary address lookup failed); routing assessment unverified."
+        elif mail_routing_assessment == "no_route":
+            mx_takeaway = "Domain MX status: Domain exists in DNS but publishes neither explicit MX records nor address records."
         elif is_nxdomain:
             mx_takeaway = f"Domain MX status: Domain '{domain_part}' does not exist in DNS (NXDOMAIN authoritative response)."
-        elif mx_status == "lookup_failed":
+        elif mx_status == "lookup_failed" or mail_routing_assessment == "unverified":
             mx_takeaway = "Domain MX status: Lookup failed due to DNS timeout / unreachable nameservers."
         elif mx_status == "not_performed":
             mx_takeaway = "Domain MX status: Not performed."
@@ -597,6 +722,7 @@ class UniversalOrchestrator:
             key_takeaways.append(f"Security posture: {'SPF configured' if spf_record else ''} {'DMARC active' if dmarc_record else ''}.".strip())
 
         limitations = [
+            "DNS mail routing verification confirms authoritative DNS record publication only; it does not verify individual mailbox existence, account provisioning, or real-time inbox deliverability.",
             "Direct inbox deliverability testing (SMTP VRFY) is restricted to avoid triggering anti-abuse intrusion flags.",
             "Non-public profile information, private passwords, and encrypted account data cannot be accessed.",
             "Compliance with ethical standards: no brute-force login or credential-stuffing tests are performed."
@@ -626,19 +752,12 @@ class UniversalOrchestrator:
                 "Domain Name": domain_part,
                 "Mail Provider Classification": provider,
                 "Disposable Mail Service": "Yes (High Risk)" if is_disposable else "No (Legitimate Domain)",
+                "DNS Query Status": dns_query_status,
                 "MX Routing Status": mx_status,
                 "Mail Routing Assessment": mail_routing_assessment,
+                "Mail Routing Description": mail_routing_description,
                 "MX Resolution Details": mx_status_explanation,
-                "MX Records": (
-                    ", ".join(mx_records) if mx_status == "resolved" and mx_records and not is_null_mx
-                    else ("Null MX (RFC 7505 — Does Not Accept Mail)" if is_null_mx
-                    else ("Suppressed by Policy (Webmail Domain)" if mx_status == "suppressed_by_policy"
-                    else ("Domain Does Not Exist (NXDOMAIN)" if is_nxdomain
-                    else (f"No Explicit MX (Address Records Found: {', '.join(address_records[:2])})" if is_noanswer and has_address_records
-                    else ("None Published (No MX or Address Records)" if is_noanswer
-                    else ("Lookup Failed (DNS Timeout / Unreachable)" if mx_status == "lookup_failed"
-                    else "Not Performed"))))))
-                ),
+                "MX Records": mx_records_str,
                 "SPF Policy Published": "Yes" if spf_record else ("Suppressed (Webmail Domain)" if is_public_webmail else "No"),
                 "DMARC Policy Published": "Yes" if dmarc_record else ("Suppressed (Webmail Domain)" if is_public_webmail else "No")
             },
@@ -714,18 +833,26 @@ class UniversalOrchestrator:
         national_number = parsed.national_number
         nat_num_str = str(national_number)
 
+        # Determine telecom circle / LSA attribution
+        if country_code == 91:
+            if geo_loc and geo_loc.lower() not in ("india", "global / international allocation"):
+                telecom_circle_lsa = f"{geo_loc} (geographical exchange area)"
+            else:
+                telecom_circle_lsa = "Not verified (mobile telecom circle mapping unavailable in offline dataset)"
+        else:
+            telecom_circle_lsa = geo_loc if geo_loc else "Unspecified"
+
         # Authoritative allocation evidence & source attribution
         if country_code == 91 and car_name and "Unassigned" not in car_name:
             carrier_allocation_source = (
-                f"TRAI / DoT National Numbering Plan (Series {nat_num_str[:4]} allocated to "
-                f"{car_name} in Mumbai Telecom Circle / LSA; offline dataset via Google libphonenumber v9.0.42)"
+                "Google libphonenumber v9.0.42 (offline carrier mapping dataset)"
             )
-            carrier_data_type = "Regulator Numbering-Plan Allocation (Not real-time HLR/subscriber routing)"
+            carrier_data_type = "Historical/original prefix allocation metadata (offline dataset; not a live regulator lookup)"
         elif car_name and "Unassigned" not in car_name:
             carrier_allocation_source = (
                 "National Numbering Plan prefix allocation (offline dataset via Google libphonenumber v9.0.42)"
             )
-            carrier_data_type = "Regulator Numbering-Plan Allocation (Not real-time HLR/subscriber routing)"
+            carrier_data_type = "Historical/original prefix allocation metadata (offline dataset; not a live regulator lookup)"
         else:
             carrier_allocation_source = "Unallocated or unassigned in offline numbering database"
             carrier_data_type = "Unverified"
@@ -735,6 +862,13 @@ class UniversalOrchestrator:
             ContactAssociation(association_type="National Number", value=formatted_nat, source="Telecom Regional Plan", confidence="High"),
             ContactAssociation(association_type="Telecommunications Region", value=geo_loc, source="ITU Telecom Geocoder", confidence="High")
         ]
+        if telecom_circle_lsa and "Not verified" not in telecom_circle_lsa:
+            contact_associations.append(ContactAssociation(
+                association_type="Telecom Circle / LSA",
+                value=telecom_circle_lsa,
+                source="ITU Telecom Geocoder",
+                confidence="High"
+            ))
         if car_name and "Unassigned" not in car_name:
             contact_associations.append(ContactAssociation(
                 association_type="Original Allocation Carrier",
@@ -759,7 +893,7 @@ class UniversalOrchestrator:
             ),
             RelatedFinding(
                 title="Numbering Range Allocation",
-                details=f"Original carrier block allocated to {car_name}. Current operating carrier is unverified due to Mobile Number Portability (MNP) and requires live HLR lookup.",
+                details=f"Historical prefix allocation assigned to {car_name} (Google libphonenumber v9.0.42). Current operating carrier is unverified due to Mobile Number Portability (MNP) and requires live HLR lookup.",
                 category="Infrastructure",
                 confidence="High" if car_name != "Network / Unassigned Carrier" else "Moderate"
             )
@@ -803,7 +937,7 @@ class UniversalOrchestrator:
         confidence_breakdown = [
             ConfidenceBreakdown(factor="E.164 ITU-T Parsing", assessment="Parsed and formatted according to international standard", impact="Positive"),
             ConfidenceBreakdown(factor="Geographic Allocation", assessment=f"Allocated to {geo_loc}", impact="Positive"),
-            ConfidenceBreakdown(factor="Carrier Resolution", assessment=f"Original block allocated to {car_name} (Current carrier unverified due to MNP)", impact="Positive" if "Unassigned" not in car_name else "Neutral"),
+            ConfidenceBreakdown(factor="Carrier Resolution", assessment=f"Original block allocated to {car_name} (Google libphonenumber v9.0.42; current carrier unverified due to MNP)", impact="Positive" if "Unassigned" not in car_name else "Neutral"),
             ConfidenceBreakdown(factor="Validity Verification", assessment="Formally valid under national numbering plan (Subscriber activity unverified)" if is_valid else "Possible but unconfirmed under strict national dial plan", impact="Positive" if is_valid else "Cautionary")
         ]
 
@@ -822,6 +956,7 @@ class UniversalOrchestrator:
                     f"International format: {formatted_intl} (Country Code +{country_code}).",
                     f"Line classification: {line_type} numbering range.",
                     f"Telecommunications region: {geo_loc}.",
+                    f"Telecom circle / LSA: {telecom_circle_lsa}.",
                     f"Original allocation carrier: {car_name} (Current carrier: Not verified — subject to Mobile Number Portability).",
                     f"Numbering plan validity: Conforms to national ITU-T allocation (Live subscriber assignment and active line reachability unverified).",
                     f"Associated timezone: {', '.join(timezones) if timezones else 'Global UTC'}."
@@ -836,6 +971,7 @@ class UniversalOrchestrator:
                 "National Significant Number": str(national_number),
                 "Line Type": line_type,
                 "Telecommunications Region": geo_loc,
+                "Telecom Circle / LSA": telecom_circle_lsa,
                 "Original Allocation Carrier": car_name,
                 "Carrier Allocation Source": carrier_allocation_source,
                 "Carrier Data Type": carrier_data_type,
@@ -854,8 +990,9 @@ class UniversalOrchestrator:
                 breakdown=confidence_breakdown
             ),
             investigation_limitations=[
-                "Carrier allocation evidence reflects historical national regulator assignments (e.g. TRAI/DoT National Numbering Plan via Google libphonenumber v9.0.42) and does not reflect current subscriber carrier, SIM activation, or reachability under Mobile Number Portability (MNP).",
+                "Carrier allocation evidence reflects historical/original prefix allocation metadata from Google libphonenumber v9.0.42 (offline dataset) and does not reflect a live query to TRAI/DoT, nor live subscriber carrier, SIM activation, or reachability under Mobile Number Portability (MNP).",
                 "Offline ITU-T numbering plan validation verifies that digits conform to national carrier allocations, but does not verify live subscriber assignment, current operational status, or carrier changes via Mobile Number Portability (MNP).",
+                "Mobile telecom circle / LSA assignments are not mapped in the offline numbering database for Indian mobile numbers; circle verification requires an authoritative external telecom registry query.",
                 "Current carrier: Not verified without authoritative real-time HLR/SS7 or commercial CNAM lookup.",
                 "Real-time GPS cell tower triangulation and subscriber identity disclosure require lawful telecommunication warrants and are not accessible via OSINT.",
                 "VoIP and virtual numbers may be used across geographical boundaries regardless of allocated area code.",

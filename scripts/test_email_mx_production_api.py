@@ -60,8 +60,10 @@ def run_tests():
         with urllib.request.urlopen(query_req, timeout=35) as resp:
             data = json.loads(resp.read().decode("utf-8"))
             info = data.get("identified_information", {})
+            dns_query_status = info.get("DNS Query Status")
             mx_status = info.get("MX Routing Status")
             mail_routing = info.get("Mail Routing Assessment")
+            mail_routing_desc = info.get("Mail Routing Description")
             mx_records = info.get("MX Records")
             mx_details = info.get("MX Resolution Details")
             provider = info.get("Mail Provider Classification")
@@ -74,8 +76,10 @@ def run_tests():
                 "status": status,
                 "headline": headline,
                 "provider": provider,
+                "dns_query_status": dns_query_status,
                 "mx_routing_status": mx_status,
                 "mail_routing_assessment": mail_routing,
+                "mail_routing_description": mail_routing_desc,
                 "mx_records": mx_records,
                 "mx_resolution_details": mx_details,
                 "execution_seconds": data.get("duration_seconds")
@@ -84,8 +88,10 @@ def run_tests():
             print(f"  Status: {status}")
             print(f"  Headline: {headline}")
             print(f"  Provider: {provider}")
+            print(f"  DNS Query Status: {dns_query_status}")
             print(f"  MX Routing Status: {mx_status}")
             print(f"  Mail Routing Assessment: {mail_routing}")
+            print(f"  Mail Routing Description: {mail_routing_desc}")
             print(f"  MX Records: {mx_records}")
             print(f"  MX Resolution Details: {mx_details}")
             print(f"  Execution Time: {data.get('duration_seconds')}s")
